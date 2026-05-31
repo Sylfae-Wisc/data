@@ -32,15 +32,15 @@
 │   ├── features.py       # 特征构建（✅）
 │   ├── models.py         # 模型训练（✅）
 │   ├── evaluation.py     # 评估指标（✅）
-│   └── predictor.py      # 预测推理（❌ 待做）
+│   └── predictor.py      # 预测推理（✅）
 ├── app/
-│   ├── main.py           # Streamlit 入口（❌ 待做）
+│   ├── main.py           # Streamlit 入口（✅）
 │   ├── pages/
-│   │   ├── 1_match_predictor.py   # 模板页面（❌ 待做）
+│   │   ├── 1_match_predictor.py   # 模板页面（✅）
 │   │   ├── 2_team_analysis.py     # （❌ 待做）
 │   │   ├── 3_masters_london.py    # （❌ 待做）
 │   │   └── 4_player_analyzer.py   # （❌ 待做）
-│   └── components/       # 可复用 UI 组件（❌ 待做）
+│   └── components/       # 可复用 UI 组件（✅）
 ├── tests/                # pytest（❌ 待做）
 ├── requirements.txt      # ✅ 已定
 ├── .gitignore
