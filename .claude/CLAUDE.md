@@ -57,7 +57,7 @@
 | 0-2 | 数据下载 + Schema 记录 | ✅ |
 | 0-3 | data_pipeline（加载→清洗→合并→输出 parquet） | ✅ |
 | 0-4 | features / models / evaluation | ✅ |
-| 0-5 | predictor.py 三个预测接口 | ❌ |
+| 0-5 | predictor.py 三个预测接口 | ✅ |
 | 1 | Streamlit 模板页（main + Match Predictor） | ❌ |
 | 2 | 按模板扩展三个页面 | ❌ |
 | 3 | 测试 + 收尾 | ❌ |
@@ -159,12 +159,17 @@ pytest tests/                        # 运行测试
 ### predictor.py 接口
 
 ```python
-predict_match(team1, team2)       → {"team1_win_prob": 0.62, ...}
-predict_bp(team1, team2)          → {"ban_prob": {...}, "pick_prob": {...}}
-predict_bo3_score(team1, team2)   → {"2-0": 0.25, "2-1": 0.30, ...}
+predict_match(team1, team2, stats_a=None, stats_b=None)
+    # → {"team1_win_prob": 0.62, "team2_win_prob": 0.38, "mode": "pre_match"}
+predict_bp(team1, team2, n_top=5)
+    # → {"team1_bans": [...], "team1_picks": [...], "team2_bans": [...], ...}
+predict_bo3_score(team1, team2)
+    # → {"2-0": 0.25, "2-1": 0.30, "1-2": 0.25, "0-2": 0.20}
 ```
 
-页面开发者只调这三个函数，不直接加载模型。
+- `predict_match`: 赛前模式只传队伍名，赛中模式传 stats_a/stats_b（含实际统计值）
+- `predict_bp`: 基于历史 map ban/pick 记录的概率分布
+- `predict_bo3_score`: 链式乘法 p(map win) 独立同分布
 
 ### 验证
 
