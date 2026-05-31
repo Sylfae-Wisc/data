@@ -1,0 +1,32 @@
+# Data files (large CSVs, not suitable for version control)
+data/raw/*
+data/processed/*
+data/features/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/features/.gitkeep
+
+# Model artifacts
+models/*.pkl
+models/*.joblib
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+venv/
+.venv/
+env/
