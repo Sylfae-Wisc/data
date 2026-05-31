@@ -37,9 +37,9 @@
 │   ├── main.py           # Streamlit 入口（✅）
 │   ├── pages/
 │   │   ├── 1_match_predictor.py   # 模板页面（✅）
-│   │   ├── 2_team_analysis.py     # （❌ 待做）
-│   │   ├── 3_masters_london.py    # （❌ 待做）
-│   │   └── 4_player_analyzer.py   # （❌ 待做）
+│   │   ├── 2_team_analysis.py     # （✅）
+│   │   ├── 3_masters_london.py    # （✅）
+│   │   └── 4_player_analyzer.py   # （✅）
 │   └── components/       # 可复用 UI 组件（✅）
 ├── tests/                # pytest（❌ 待做）
 ├── requirements.txt      # ✅ 已定
@@ -58,8 +58,8 @@
 | 0-3 | data_pipeline（加载→清洗→合并→输出 parquet） | ✅ |
 | 0-4 | features / models / evaluation | ✅ |
 | 0-5 | predictor.py 三个预测接口 | ✅ |
-| 1 | Streamlit 模板页（main + Match Predictor） | ❌ |
-| 2 | 按模板扩展三个页面 | ❌ |
+| 1 | Streamlit 模板页（main + Match Predictor） | ✅ |
+| 1-2 | 按模板扩展三个页面（Team Dashboard / Masters London / Player Analyzer） | ✅ |
 | 3 | 测试 + 收尾 | ❌ |
 
 完整进度见[docs/项目进度.md](docs/项目进度.md)。
