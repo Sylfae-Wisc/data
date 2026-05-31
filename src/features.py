@@ -12,15 +12,39 @@ FORM_WINDOWS = [5, 10, 20]
 
 
 def _add_tournament_ordinal(df: pd.DataFrame) -> pd.DataFrame:
-    """按 Tournament 名称提取大致时间顺序（用于时序分割）"""
-    known_order = [
-        "VCT 2021", "VCT 2022", "VCT 2023", "VCT 2024", "VCT 2025", "VCT 2026",
-    ]
+    """按年份 + 赛事层级提取时间顺序"""
+    # 赛事层级优先级（数值越小越早）
+    TIER_PRIORITY = {
+        "Kickoff": 0,
+        "Challengers": 1,
+        "League": 2,
+        "Masters": 3,
+        "Champions": 4,
+        "Last Chance": 5,
+        "Qualifier": 6,
+    }
+
+    def _tier_rank(name: str) -> int:
+        name_lower = name.lower()
+        for keyword, rank in TIER_PRIORITY.items():
+            if keyword.lower() in name_lower:
+                return rank
+        return 5  # 默认中间
+
+    # 直接从 Tournament 名提取年份
+    def _extract_year(name: str) -> int:
+        import re
+        match = re.search(r"(20\d{2})", name)
+        return int(match.group(1)) if match else 0
+
     df = df.copy()
-    df["tord"] = df["Tournament"].apply(
-        lambda t: next((i for i, k in enumerate(known_order) if k in str(t)), 999)
-    )
-    return df
+    df["_year_extracted"] = df["Tournament"].apply(_extract_year)
+    df["_tier"] = df["Tournament"].apply(_tier_rank)
+    # 按 (年份, 赛事层级, Stage) 排序
+    df["tord"] = df.groupby(["Year", "_year_extracted"], group_keys=False).cumcount()
+    df = df.sort_values(["Year", "_tier", "tord"]).reset_index(drop=True)
+    df["tord"] = range(len(df))
+    return df.drop(columns=["_year_extracted", "_tier"])
 
 
 def build_team_form_features(match_df: pd.DataFrame) -> pd.DataFrame:
