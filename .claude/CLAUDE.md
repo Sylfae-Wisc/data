@@ -85,7 +85,8 @@
 | 2026 | 0.072 | 0.966 | 0.079 | 0.958 |
 
 ### BP 预测
-基于历史 Ban/Pick 统计的条件概率：P(ban X | team 选了 Y)
+模拟 VCT 7 图 → 3 图 veto 流程：双方基于历史 pick/ban 率计算每图偏好分，贪心博弈
+（ban 对手最强图、pick 己方最强图），输出最可能的完整 veto 序列。
 
 ### BO3 比分
 链式乘法：P(2-0) = P(map1 win) × P(map2 win)
@@ -133,9 +134,7 @@ Brier Score / Log Loss / ROC-AUC / F1 / McNemar's Test / ECE / Walk-forward CV
 
 ```bash
 pip install -r requirements.txt
-python src/data_pipeline.py          # 运行数据管道
-python src/features.py               # 构建特征
-python src/models.py                 # 训练模型
+python src/run_pipeline.py             # 一键：数据管道→特征→模型
 streamlit run app/main.py            # 启动 UI
 pytest tests/                        # 运行测试
 ```
@@ -161,14 +160,14 @@ pytest tests/                        # 运行测试
 ```python
 predict_match(team1, team2, stats_a=None, stats_b=None)
     # → {"team1_win_prob": 0.62, "team2_win_prob": 0.38, "mode": "pre_match"}
-predict_bp(team1, team2, n_top=5)
-    # → {"team1_bans": [...], "team1_picks": [...], "team2_bans": [...], ...}
+predict_bp(team1, team2)
+    # → {"veto_sequence": [...], "final_maps": [...], "team_a_pick": "Ascent", ...}
 predict_bo3_score(team1, team2)
     # → {"2-0": 0.25, "2-1": 0.30, "1-2": 0.25, "0-2": 0.20}
 ```
 
 - `predict_match`: 赛前模式只传队伍名，赛中模式传 stats_a/stats_b（含实际统计值）
-- `predict_bp`: 基于历史 map ban/pick 记录的概率分布
+- `predict_bp`: 模拟 VCT veto 流程（7 图 → 3 图），基于历史 ban/pick 率的贪心博弈
 - `predict_bo3_score`: 链式乘法 p(map win) 独立同分布
 
 ### 验证

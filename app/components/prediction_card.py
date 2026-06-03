@@ -1,103 +1,153 @@
-"""可复用组件：预测结果展示卡片"""
+"""可复用组件：预测结果展示卡片（VCT 主题）"""
 
+from html import escape
 import streamlit as st
 import plotly.graph_objects as go
-from typing import Optional
 
 
 def show_win_prob(result: dict, team1: str, team2: str):
-    """展示胜负概率预测结果
-
-    Args:
-        result: predict_match() 返回的 dict
-        team1: 队伍1简称
-        team2: 队伍2简称
-    """
+    """展示胜负概率预测结果"""
     p1 = result["team1_win_prob"]
     p2 = result["team2_win_prob"]
     mode = result.get("mode", "pre_match")
 
-    # 模式标签
     mode_label = "赛中预测" if mode == "in_match" else "赛前预测"
-    mode_color = "#4CAF50" if mode == "in_match" else "#FF9800"
+    mode_color = "#86EFAC" if mode == "in_match" else "#FBBF24"
+    team1_safe = escape(team1)
+    team2_safe = escape(team2)
+    p1_width = max(0, min(p1, 1)) * 100
+    p2_width = max(0, min(p2, 1)) * 100
 
-    st.markdown(f"""
+    st.markdown(
+        f"""
+<div class="matchup-card">
+    <div class="matchup-head">
+        <span class="matchup-label">胜负概率预测</span>
+        <span class="matchup-mode" style="background:{mode_color};">{mode_label}</span>
+    </div>
+    <div class="matchup-grid">
+        <div class="match-team">
+            <div class="team-name" style="color:var(--vct-blue);">{team1_safe}</div>
+            <div class="prob-value" style="color:var(--vct-blue);">{p1:.1%}</div>
+            <div class="prob-track">
+                <div class="prob-fill" style="width:{p1_width:.1f}%; background:linear-gradient(90deg, var(--vct-blue), var(--vct-cyan));"></div>
+            </div>
+        </div>
+        <div class="versus">VS</div>
+        <div class="match-team right">
+            <div class="team-name" style="color:var(--vct-red);">{team2_safe}</div>
+            <div class="prob-value" style="color:var(--vct-red);">{p2:.1%}</div>
+            <div class="prob-track">
+                <div class="prob-fill" style="width:{p2_width:.1f}%; margin-left:auto; background:linear-gradient(90deg, #fb7185, var(--vct-red));"></div>
+            </div>
+        </div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def show_bp(result: dict, team1: str, team2: str):
+    """展示 BP（地图 Ban/Pick）预测 — VCT 7 图 → 3 图禁选过程"""
+    team1_safe = escape(team1)
+    team2_safe = escape(team2)
+
+    st.markdown("""
     <div class="pred-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <span style="color: #888; font-size: 0.85rem;">胜负概率预测</span>
-            <span style="background: {mode_color}; color: #fff; border-radius: 4px; padding: 0.15rem 0.6rem; font-size: 0.75rem;">{mode_label}</span>
+        <div class="card-header">
+            <span class="label">地图 Ban / Pick 预测</span>
+            <span class="badge">禁选模拟</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # 概率横向对比
-    c1, c2, c3 = st.columns([2, 1, 2])
+    sequence = result.get("veto_sequence", [])
+    if not sequence:
+        st.info("暂无 BP 预测数据")
+        return
 
-    with c1:
-        st.markdown(f'<div class="team-name" style="color: #4FC3F7;">{team1}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="prob-value" style="color: #4FC3F7;">{p1:.1%}</div>', unsafe_allow_html=True)
-        st.progress(p1)
+    final = result.get("final_maps", [])
+    if len(final) == 3:
+        st.markdown("**最终地图**")
+        m1, m2, m3 = st.columns(3)
 
-    with c2:
-        st.markdown('<div style="text-align: center; padding-top: 1.5rem; color: #888;">VS</div>', unsafe_allow_html=True)
+        with m1:
+            st.markdown(
+                f'<div class="final-map-card" style="--card-bg:linear-gradient(135deg,rgba(134,239,172,0.16),rgba(15,23,42,0.88)); --card-border:#86EFAC66; --card-color:#86EFAC;">'
+                f'<div class="final-map-label">Map 1</div>'
+                f'<div class="final-map-name">{escape(final[0])}</div>'
+                f'<div class="final-map-note">{team1_safe} 选图</div></div>',
+                unsafe_allow_html=True,
+            )
+        with m2:
+            st.markdown(
+                f'<div class="final-map-card" style="--card-bg:linear-gradient(135deg,rgba(34,211,238,0.16),rgba(15,23,42,0.88)); --card-border:#22D3EE66; --card-color:#22D3EE;">'
+                f'<div class="final-map-label">Map 2</div>'
+                f'<div class="final-map-name">{escape(final[1])}</div>'
+                f'<div class="final-map-note">{team2_safe} 选图</div></div>',
+                unsafe_allow_html=True,
+            )
+        with m3:
+            st.markdown(
+                f'<div class="final-map-card" style="--card-bg:linear-gradient(135deg,rgba(251,191,36,0.16),rgba(15,23,42,0.88)); --card-border:#FBBF2466; --card-color:#FBBF24;">'
+                f'<div class="final-map-label">Map 3</div>'
+                f'<div class="final-map-name">{escape(final[2])}</div>'
+                f'<div class="final-map-note">决胜图</div></div>',
+                unsafe_allow_html=True,
+            )
 
-    with c3:
-        st.markdown(f'<div class="team-name" style="text-align: right; color: #FF8A80;">{team2}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="prob-value" style="text-align: right; color: #FF8A80;">{p2:.1%}</div>', unsafe_allow_html=True)
-        st.progress(p2)
+        st.divider()
 
+    # BP 过程
+    st.markdown("**BP 过程（地图禁选顺序）**")
+    st.caption("Ban 表示禁用地图，Pick 表示选择地图，决胜图是前面禁选结束后自动留下的最后一张地图。")
+    for s in sequence:
+        step = s["step"]
+        if s["team"] != "—":
+            actor = team1 if s["team"] == "A" else team2
+        else:
+            actor = "自动"
 
-def show_bp(result: dict, team1: str, team2: str):
-    """展示 BP（地图 Ban/Pick）预测结果
+        action = s["action"]
+        map_name = s["map"]
 
-    Args:
-        result: predict_bp() 返回的 dict
-    """
-    st.markdown("""
-    <div class="pred-card">
-        <span style="color: #888; font-size: 0.85rem;">地图 Ban / Pick 预测</span>
-    </div>
-    """, unsafe_allow_html=True)
+        if action == "ban":
+            icon, action_label, color, bg = "🚫", "禁用", "#FB7185", "rgba(251,113,133,0.14)"
+        elif action == "pick":
+            icon, action_label, color, bg = "✅", "选择", "#86EFAC", "rgba(134,239,172,0.12)"
+        else:
+            icon, action_label, color, bg = "🎲", "决胜", "#FBBF24", "rgba(251,191,36,0.12)"
 
-    c1, c2 = st.columns(2)
+        st.markdown(
+            f'<span class="veto-chip" style="--chip-bg:{bg}; --chip-border:{color}55; --chip-color:{color};">'
+            f'<span class="veto-step">{step}</span>'
+            f'{icon} {escape(actor)} <span style="color:{color};font-weight:850;">{action_label}</span> → '
+            f'<b>{escape(map_name)}</b></span>',
+            unsafe_allow_html=True,
+        )
 
-    with c1:
-        st.markdown(f'<span style="color: #4FC3F7;">{team1}</span>', unsafe_allow_html=True)
-        st.markdown("**Bans**")
-        for item in result.get("team1_bans", []):
-            st.markdown(f'<span class="bp-map">{item["map"]} ({item["prob"]:.1%})</span>', unsafe_allow_html=True,)
-        st.markdown("**Picks**")
-        for item in result.get("team1_picks", []):
-            st.markdown(f'<span class="bp-map">{item["map"]} ({item["prob"]:.1%})</span>', unsafe_allow_html=True,)
-
-    with c2:
-        st.markdown(f'<span style="color: #FF8A80;">{team2}</span>', unsafe_allow_html=True)
-        st.markdown("**Bans**")
-        for item in result.get("team2_bans", []):
-            st.markdown(f'<span class="bp-map">{item["map"]} ({item["prob"]:.1%})</span>', unsafe_allow_html=True,)
-        st.markdown("**Picks**")
-        for item in result.get("team2_picks", []):
-            st.markdown(f'<span class="bp-map">{item["map"]} ({item["prob"]:.1%})</span>', unsafe_allow_html=True,)
-
-    st.caption("基于历史 BP 统计的条件概率")
+    st.caption(
+        f"基于两队历史 BP 数据的贪心博弈模拟 · "
+        f"置信度: {team1}={result.get('team_a_pick_prob', 0):.1%} / "
+        f"{team2}={result.get('team_b_pick_prob', 0):.1%}"
+    )
 
 
 def show_bo3(result: dict):
-    """展示 BO3 比分预测
-
-    Args:
-        result: predict_bo3_score() 返回的 dict
-    """
+    """展示 BO3 比分预测"""
     st.markdown("""
     <div class="pred-card">
-        <span style="color: #888; font-size: 0.85rem;">BO3 比分预测</span>
+        <div class="card-header">
+            <span class="label">BO3 比分预测</span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # 用 Plotly 横向柱状图展示
     outcomes = ["2-0", "2-1", "1-2", "0-2"]
     probs = [result.get(o, 0) for o in outcomes]
-    colors = ["#4FC3F7", "#81D4FA", "#FF8A80", "#EF5350"]
+    colors = ["#38BDF8", "#86EFAC", "#FBBF24", "#FF4655"]
+    max_prob = max(max(probs), 0.01)
 
     fig = go.Figure(go.Bar(
         x=probs,
@@ -106,36 +156,30 @@ def show_bo3(result: dict):
         marker_color=colors,
         text=[f"{p:.1%}" for p in probs],
         textposition="outside",
+        textfont=dict(size=13, color="#F8FAFC"),
     ))
     fig.update_layout(
         height=180,
         margin=dict(l=10, r=40, t=10, b=10),
-        xaxis=dict(range=[0, max(probs) * 1.3], showgrid=False, visible=False),
+        xaxis=dict(range=[0, max_prob * 1.35], showgrid=False, visible=False),
         yaxis=dict(autorange="reversed"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#ccc",
+        font=dict(color="#AAB7CC"),
     )
     st.plotly_chart(fig, use_container_width=True)
-
     st.caption("链式乘法：每图独立同分布，P(2-0) = p²")
 
 
 def show_match_summary(result: dict, team1: str, team2: str):
-    """组合展示完整的比赛预测结果
-
-    Args:
-        result: predict_match() 的完整返回
-        team1: 队伍1简称
-        team2: 队伍2简称
-    """
-    tab1, tab2, tab3 = st.tabs(["胜负概率", "BP 预测", "BO3 比分"])
+    """组合展示完整的比赛预测结果"""
+    tab1, tab2, tab3 = st.tabs(["📊 胜负概率", "🗺️ BP 预测", "🏆 BO3 比分"])
 
     with tab1:
         show_win_prob(result, team1, team2)
 
     with tab2:
-        if "team1_bans" in result:
+        if "veto_sequence" in result:
             show_bp(result, team1, team2)
         else:
             st.info("BP 数据仅部分页面可用")

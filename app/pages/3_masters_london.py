@@ -10,12 +10,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from app.components import FEATURES_DIR, PROCESSED_DIR
+from app.components.sidebar import show_sidebar
+from app.components.theme import apply_global_styles, page_header
 from src.predictor import predict_match, predict_bo3_score
 
 st.set_page_config(page_title="Masters London", page_icon="🏅", layout="wide")
 
-st.title("🏅 Masters London 2026")
-st.markdown("VCT 2026 大师赛专题页 — 赛程回顾、数据分析、胜负复盘。")
+apply_global_styles()
+show_sidebar()
+
+page_header("🏅 Masters London 2026", "VCT 2026 大师赛专题页 — 赛程回顾、数据分析、胜负复盘。")
 
 # ==== 数据加载 ====
 MASTERS_NAME = "Valorant Masters Santiago 2026"  # 最新 Masters 数据
@@ -104,7 +108,7 @@ with tab1:
         match_name = match["Match Type"]
 
         winner = t1 if s1 > s2 else t2 if s2 > s1 else "平局"
-        winner_color = "#4FC3F7" if winner == t1 else "#FF8A80"
+        winner_color = "#38BDF8" if winner == t1 else "#FB7185"
 
         with st.container():
             cols = st.columns([1, 3, 1, 1])
@@ -133,7 +137,7 @@ with tab2:
         x=records_df["战队"],
         y=records_df["胜"],
         name="胜",
-        marker_color="#4FC3F7",
+        marker_color="#38BDF8",
         text=records_df["胜"],
         textposition="outside",
     ))
@@ -141,7 +145,7 @@ with tab2:
         x=records_df["战队"],
         y=records_df["负"],
         name="负",
-        marker_color="#EF5350",
+        marker_color="#FF4655",
         text=records_df["负"],
         textposition="outside",
     ))
@@ -150,7 +154,7 @@ with tab2:
         height=350,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#ccc",
+        font_color="#AAB7CC",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(fig, width='stretch')
@@ -170,7 +174,7 @@ with tab3:
             x=top_players["Rating"],
             y=top_players["Player"],
             orientation="h",
-            marker_color="#FFB74D",
+            marker_color="#FBBF24",
             text=top_players["Rating"].round(2),
             textposition="outside",
         ))
@@ -180,7 +184,7 @@ with tab3:
             yaxis=dict(autorange="reversed"),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#ccc",
+            font_color="#AAB7CC",
             margin=dict(l=10, r=60, t=10, b=10),
         )
         st.plotly_chart(fig, width='stretch')
@@ -220,7 +224,7 @@ with tab4:
                 x=map_counts.values,
                 y=map_counts.index,
                 orientation="h",
-                marker_color="#81C784",
+                marker_color="#86EFAC",
                 text=map_counts.values,
                 textposition="outside",
             ))
@@ -228,7 +232,7 @@ with tab4:
                 height=300,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')
@@ -245,7 +249,7 @@ with tab4:
                 x=agent_agg.values,
                 y=agent_agg.index,
                 orientation="h",
-                marker_color="#CE93D8",
+                marker_color="#C084FC",
                 text=[f"{v:.0f}%" for v in agent_agg.values],
                 textposition="outside",
             ))
@@ -254,7 +258,7 @@ with tab4:
                 xaxis=dict(range=[0, 100]),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')

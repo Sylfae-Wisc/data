@@ -35,45 +35,73 @@ _model: any = None
 _imputer: any = None
 _feature_df: Optional[pd.DataFrame] = None
 _draft_df: Optional[pd.DataFrame] = None
+_team_alias_map: dict[str, str] = {}
 _team_form_cache: dict = {}
 _team_ban_cache: dict = {}
 _team_pick_cache: dict = {}
 
 
 def _load_resources():
-    global _model, _imputer, _feature_df, _draft_df
+    global _model, _imputer, _feature_df, _draft_df, _team_alias_map
     if _model is None:
         _model = joblib.load(MODELS_DIR / "xgb_model.pkl")
         _imputer = joblib.load(MODELS_DIR / "imputer.pkl")
         _feature_df = pd.read_parquet(FEATURES_DIR / "match_features.parquet")
         _draft_df = pd.read_parquet(PROCESSED_DIR / "draft_dataset.parquet")
+        teams = sorted(set(_feature_df["Team A"]).union(set(_feature_df["Team B"])))
+        _team_alias_map = {team.strip().lower(): team for team in teams}
+
+        mapping_path = DATA_DIR / "raw" / "all_ids" / "all_teams_mapping.csv"
+        if mapping_path.exists():
+            mapping = pd.read_csv(mapping_path)
+            for _, row in mapping.iterrows():
+                full_name = str(row.get("Full Name", "")).strip()
+                abbreviated = str(row.get("Abbreviated", "")).strip()
+                if full_name in teams:
+                    _team_alias_map[full_name.lower()] = full_name
+                    if abbreviated:
+                        _team_alias_map[abbreviated.lower()] = full_name
+
+
+def _normalize_team_name(team: str) -> str:
+    """Map UI labels/abbreviations to the canonical names used in feature data."""
+    _load_resources()
+    team = str(team).strip()
+    return _team_alias_map.get(team.lower(), team)
 
 
 def _get_team_form(team: str) -> dict:
     """获取某支队伍最新的 form 值（滚动窗口 5/10/20）"""
+    team = _normalize_team_name(team)
     if team in _team_form_cache:
         return _team_form_cache[team]
 
     df = _feature_df
-    as_a = df[df["Team A"] == team].sort_values(["Year", "tord"])
-    as_b = df[df["Team B"] == team].sort_values(["Year", "tord"])
+    as_a = df[df["Team A"] == team][
+        ["Year", "tord", "team_a_form_5", "team_a_form_10", "team_a_form_20"]
+    ].rename(columns={
+        "team_a_form_5": "form_5",
+        "team_a_form_10": "form_10",
+        "team_a_form_20": "form_20",
+    })
+    as_b = df[df["Team B"] == team][
+        ["Year", "tord", "team_b_form_5", "team_b_form_10", "team_b_form_20"]
+    ].rename(columns={
+        "team_b_form_5": "form_5",
+        "team_b_form_10": "form_10",
+        "team_b_form_20": "form_20",
+    })
 
-    if len(as_a) > 0:
-        last = as_a.iloc[-1]
-        result = {
-            "form_5": last["team_a_form_5"],
-            "form_10": last["team_a_form_10"],
-            "form_20": last["team_a_form_20"],
-        }
-    elif len(as_b) > 0:
-        last = as_b.iloc[-1]
-        result = {
-            "form_5": last["team_b_form_5"],
-            "form_10": last["team_b_form_10"],
-            "form_20": last["team_b_form_20"],
-        }
-    else:
+    history = pd.concat([as_a, as_b], ignore_index=True).sort_values(["Year", "tord"])
+    if history.empty:
         result = {"form_5": 0.5, "form_10": 0.5, "form_20": 0.5}
+    else:
+        last = history.iloc[-1]
+        result = {
+            "form_5": last["form_5"],
+            "form_10": last["form_10"],
+            "form_20": last["form_20"],
+        }
 
     # 处理 NaN（新队伍没有足够历史）
     for k in result:
@@ -86,6 +114,8 @@ def _get_team_form(team: str) -> dict:
 
 def _get_h2h(team1: str, team2: str) -> float:
     """获取两队历史交手 ratio（从 team1 视角）"""
+    team1 = _normalize_team_name(team1)
+    team2 = _normalize_team_name(team2)
     df = _feature_df
     mask_a = (df["Team A"] == team1) & (df["Team B"] == team2)
     mask_b = (df["Team A"] == team2) & (df["Team B"] == team1)
@@ -97,6 +127,61 @@ def _get_h2h(team1: str, team2: str) -> float:
         last = df[mask_b].iloc[-1]
         return 1.0 - float(last["h2h_ratio"])
     return 0.5
+
+
+def _build_match_feature_values(
+    team1: str,
+    team2: str,
+    stats_a: Optional[dict] = None,
+    stats_b: Optional[dict] = None,
+) -> dict:
+    """Build model features with team1 occupying the Team A side."""
+    f1 = _get_team_form(team1)
+    f2 = _get_team_form(team2)
+
+    feature_values = {
+        "team_a_form_5": f1["form_5"],
+        "team_b_form_5": f2["form_5"],
+        "form_diff_5": f1["form_5"] - f2["form_5"],
+        "team_a_form_10": f1["form_10"],
+        "team_b_form_10": f2["form_10"],
+        "form_diff_10": f1["form_10"] - f2["form_10"],
+        "team_a_form_20": f1["form_20"],
+        "team_b_form_20": f2["form_20"],
+        "form_diff_20": f1["form_20"] - f2["form_20"],
+        "h2h_ratio": _get_h2h(team1, team2),
+    }
+
+    if stats_a is not None and stats_b is not None:
+        diff_keys = ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]
+        diff = {k: stats_a.get(k, np.nan) - stats_b.get(k, np.nan) for k in diff_keys}
+    else:
+        diff = {k: np.nan for k in ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]}
+
+    feature_values.update({
+        "diff_acs": diff["acs"],
+        "diff_kast": diff["kast"],
+        "diff_adr": diff["adr"],
+        "diff_hs_pct": diff["hs_pct"],
+        "diff_rating": diff["rating"],
+        "diff_kd": diff["kd"],
+        "diff_fk": diff["fk"],
+    })
+
+    return feature_values
+
+
+def _raw_match_prob(
+    team1: str,
+    team2: str,
+    stats_a: Optional[dict] = None,
+    stats_b: Optional[dict] = None,
+) -> float:
+    """Raw model probability that team1 wins as the Team A side."""
+    feature_values = _build_match_feature_values(team1, team2, stats_a, stats_b)
+    X = pd.DataFrame([feature_values])[FEATURE_COLS].values
+    X = _imputer.transform(X)
+    return float(_model.predict_proba(X)[0, 1])
 
 
 def predict_match(
@@ -118,45 +203,15 @@ def predict_match(
         {"team1_win_prob": 0.62, "team2_win_prob": 0.38, "mode": "pre_match"}
     """
     _load_resources()
+    team1 = _normalize_team_name(team1)
+    team2 = _normalize_team_name(team2)
 
-    f1 = _get_team_form(team1)
-    f2 = _get_team_form(team2)
-
-    feature_values = {
-        "team_a_form_5": f1["form_5"],
-        "team_b_form_5": f2["form_5"],
-        "form_diff_5": f1["form_5"] - f2["form_5"],
-        "team_a_form_10": f1["form_10"],
-        "team_b_form_10": f2["form_10"],
-        "form_diff_10": f1["form_10"] - f2["form_10"],
-        "team_a_form_20": f1["form_20"],
-        "team_b_form_20": f2["form_20"],
-        "form_diff_20": f1["form_20"] - f2["form_20"],
-        "h2h_ratio": _get_h2h(team1, team2),
-    }
-
-    # Diff 特征：赛中模式用实时数据计算，赛前模式置空
-    if stats_a is not None and stats_b is not None:
-        diff_keys = ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]
-        diff = {k: stats_a.get(k, np.nan) - stats_b.get(k, np.nan) for k in diff_keys}
-        mode = "in_match"
-    else:
-        diff = {k: np.nan for k in ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]}
-        mode = "pre_match"
-
-    feature_values.update({
-        "diff_acs": diff["acs"],
-        "diff_kast": diff["kast"],
-        "diff_adr": diff["adr"],
-        "diff_hs_pct": diff["hs_pct"],
-        "diff_rating": diff["rating"],
-        "diff_kd": diff["kd"],
-        "diff_fk": diff["fk"],
-    })
-
-    X = pd.DataFrame([feature_values])[FEATURE_COLS].values
-    X = _imputer.transform(X)
-    prob = float(_model.predict_proba(X)[0, 1])
+    # The trained XGBoost model has a Team A position prior. Run both directions
+    # and combine them so swapping left/right returns complementary probabilities.
+    p_forward = _raw_match_prob(team1, team2, stats_a, stats_b)
+    p_reverse = _raw_match_prob(team2, team1, stats_b, stats_a)
+    prob = (p_forward + (1 - p_reverse)) / 2
+    mode = "in_match" if stats_a is not None and stats_b is not None else "pre_match"
 
     return {
         "team1_win_prob": round(prob, 4),
@@ -165,8 +220,13 @@ def predict_match(
     }
 
 
+# 当前比赛图池
+VETO_MAPS = ["Split", "Pearl", "Haven", "Breeze", "Fracture", "Ascent", "Lotus"]
+
+
 def _team_ban_pick(team: str):
-    """获取队伍的历史 ban/pick 统计"""
+    """获取队伍的历史 ban/pick 统计（归一化到 VETO_MAPS）"""
+    team = _normalize_team_name(team)
     if team in _team_ban_cache and team in _team_pick_cache:
         return _team_ban_cache[team], _team_pick_cache[team]
 
@@ -174,60 +234,149 @@ def _team_ban_pick(team: str):
     team_df = df[df["Team"] == team]
 
     if len(team_df) == 0:
-        return {}, {}
+        empty = {m: 0.0 for m in VETO_MAPS}
+        return empty, empty
 
     total = len(team_df)
     bans = team_df[team_df["Action"] == "ban"]["Map"].value_counts()
     picks = team_df[team_df["Action"] == "pick"]["Map"].value_counts()
 
-    ban_dist = {map: round(count / total, 4) for map, count in bans.items()}
-    pick_dist = {map: round(count / total, 4) for map, count in picks.items()}
+    ban_dist = {m: round(bans.get(m, 0) / total, 4) for m in VETO_MAPS}
+    pick_dist = {m: round(picks.get(m, 0) / total, 4) for m in VETO_MAPS}
 
     _team_ban_cache[team] = ban_dist
     _team_pick_cache[team] = pick_dist
     return ban_dist, pick_dist
 
 
-def predict_bp(team1: str, team2: str, n_top: int = 5) -> dict:
-    """预测 BP（地图 Ban/Pick）概率
+def _compute_map_score(team: str) -> dict[str, float]:
+    """计算队伍每张地图的偏好分（越高 = 队伍越擅长/喜欢此图）
 
-    基于两队历史 BP 记录，返回最可能的 ban/pick 分布。
+    pick_rate - 0.7 * ban_rate，无队伍数据时用全局先验。
+    """
+    ban_dist, pick_dist = _team_ban_pick(team)
+
+    # 全局先验
+    total = len(_draft_df)
+    global_bans = _draft_df[_draft_df["Action"] == "ban"]["Map"].value_counts()
+    global_picks = _draft_df[_draft_df["Action"] == "pick"]["Map"].value_counts()
+
+    scores = {}
+    for m in VETO_MAPS:
+        p = pick_dist.get(m, 0.0)
+        b = ban_dist.get(m, 0.0)
+
+        if p == 0.0 and b == 0.0:
+            gp = global_picks.get(m, 0) / max(total, 1)
+            gb = global_bans.get(m, 0) / max(total, 1)
+            scores[m] = round(gp - 0.5 * gb, 4)
+        else:
+            scores[m] = round(p - 0.7 * b, 4)
+
+    return scores
+
+
+def _simulate_veto(team1: str, team2: str) -> dict:
+    """模拟 VCT 地图 BP 流程（贪心博弈），返回最可能的 veto 结果
+
+    流程（7 图 → 3 图）：
+      Step 1: Team A ban  → 6 剩
+      Step 2: Team B ban  → 5 剩
+      Step 3: Team A pick → Map 1（A 选图）
+      Step 4: Team B pick → Map 2（B 选图）
+      Step 5: Team A ban  → 2 剩
+      Step 6: Team B ban  → 1 剩 → Map 3（决胜图）
+    """
+    score_a = _compute_map_score(team1)
+    score_b = _compute_map_score(team2)
+    remaining = set(VETO_MAPS)
+
+    def advantage(actor: str, m: str) -> float:
+        """地图 m 对 actor 方的相对优势（越高 = 对 actor 越有利）"""
+        s_actor = score_a if actor == "A" else score_b
+        s_opponent = score_b if actor == "A" else score_a
+        return s_actor[m] - s_opponent[m]
+
+    sequence = []
+
+    # Step 1: A ban — 移除对 A 最不利（对 B 最有利）的图
+    ban1 = max(remaining, key=lambda m: advantage("B", m))
+    remaining.remove(ban1)
+    sequence.append({"step": 1, "team": "A", "action": "ban", "map": ban1})
+
+    # Step 2: B ban — 移除对 B 最不利（对 A 最有利）的图
+    ban2 = max(remaining, key=lambda m: advantage("A", m))
+    remaining.remove(ban2)
+    sequence.append({"step": 2, "team": "B", "action": "ban", "map": ban2})
+
+    # Step 3: A pick — 选对 A 最有利的图
+    pick_a = max(remaining, key=lambda m: advantage("A", m))
+    remaining.remove(pick_a)
+    sequence.append({"step": 3, "team": "A", "action": "pick", "map": pick_a})
+
+    # Step 4: B pick — 选对 B 最有利的图
+    pick_b = max(remaining, key=lambda m: advantage("B", m))
+    remaining.remove(pick_b)
+    sequence.append({"step": 4, "team": "B", "action": "pick", "map": pick_b})
+
+    # Step 5: A ban
+    ban3 = max(remaining, key=lambda m: advantage("B", m))
+    remaining.remove(ban3)
+    sequence.append({"step": 5, "team": "A", "action": "ban", "map": ban3})
+
+    # Step 6: B ban
+    ban4 = max(remaining, key=lambda m: advantage("A", m))
+    remaining.remove(ban4)
+    sequence.append({"step": 6, "team": "B", "action": "ban", "map": ban4})
+
+    # 最后一张自动成为决胜图
+    decider = remaining.pop()
+    sequence.append({"step": 7, "team": "—", "action": "decider", "map": decider})
+
+    return {
+        "veto_sequence": sequence,
+        "final_maps": [pick_a, pick_b, decider],
+        "team_a_bans": [ban1, ban3],
+        "team_b_bans": [ban2, ban4],
+        "team_a_pick": pick_a,
+        "team_b_pick": pick_b,
+        "decider": decider,
+    }
+
+
+def predict_bp(team1: str, team2: str) -> dict:
+    """预测 BP（地图 Ban/Pick）— 模拟 VCT 7 图 → 3 图 veto 流程
+
+    Args:
+        team1: Team A 名称
+        team2: Team B 名称
 
     Returns:
         {
-            "team1_bans": [{"map": "Ascent", "prob": 0.15}, ...],
-            "team1_picks": [{"map": "Bind", "prob": 0.12}, ...],
-            "team2_bans": [...],
-            "team2_picks": [...],
-            "global_ban_rate": {"Ascent": 0.08, ...},
-            "global_pick_rate": {"Ascent": 0.10, ...},
+            "veto_sequence": [{"step": 1, "team": "A", "action": "ban", "map": "Sunset"}, ...],
+            "final_maps": ["Ascent", "Haven", "Breeze"],
+            "team_a_bans": ["Sunset", "Lotus"],
+            "team_b_bans": ["Split", "Pearl"],
+            "team_a_pick": "Ascent",
+            "team_b_pick": "Haven",
+            "decider": "Breeze",
+            "team_a_pick_prob": 0.12,
+            "team_b_pick_prob": 0.15,
         }
     """
     _load_resources()
+    team1 = _normalize_team_name(team1)
+    team2 = _normalize_team_name(team2)
 
-    b1, p1 = _team_ban_pick(team1)
-    b2, p2 = _team_ban_pick(team2)
+    result = _simulate_veto(team1, team2)
 
-    def _top_n(dist: dict, n: int) -> list:
-        return [{"map": k, "prob": v} for k, v in
-                sorted(dist.items(), key=lambda x: -x[1])[:n]]
+    # 附上历史 pick 概率作为置信度参考
+    _, pa = _team_ban_pick(team1)
+    _, pb = _team_ban_pick(team2)
+    result["team_a_pick_prob"] = pa.get(result["team_a_pick"], 0.0)
+    result["team_b_pick_prob"] = pb.get(result["team_b_pick"], 0.0)
 
-    # 全局统计
-    total = len(_draft_df)
-    all_bans = _draft_df[_draft_df["Action"] == "ban"]["Map"].value_counts()
-    all_picks = _draft_df[_draft_df["Action"] == "pick"]["Map"].value_counts()
-
-    global_ban_rate = {m: round(c / total, 4) for m, c in all_bans.items()}
-    global_pick_rate = {m: round(c / total, 4) for m, c in all_picks.items()}
-
-    return {
-        "team1_bans": _top_n(b1, n_top),
-        "team1_picks": _top_n(p1, n_top),
-        "team2_bans": _top_n(b2, n_top),
-        "team2_picks": _top_n(p2, n_top),
-        "global_ban_rate": dict(sorted(global_ban_rate.items(), key=lambda x: -x[1])[:n_top]),
-        "global_pick_rate": dict(sorted(global_pick_rate.items(), key=lambda x: -x[1])[:n_top]),
-    }
+    return result
 
 
 def predict_bo3_score(team1: str, team2: str) -> dict:
@@ -271,8 +420,14 @@ if __name__ == "__main__":
 
     print(f"\n=== predict_bp({t1}, {t2}) ===")
     bp = predict_bp(t1, t2)
-    for k, v in bp.items():
-        print(f"  {k}: {v}")
+    print(f"  Veto 流程:")
+    for step in bp["veto_sequence"]:
+        s = step
+        tag = f"Team {s['team']}" if s["team"] != "—" else "自动"
+        print(f"    Step {s['step']}: {tag} {s['action']} → {s['map']}")
+    print(f"  最终地图: {bp['final_maps']}")
+    print(f"  Team A pick 置信度: {bp['team_a_pick_prob']:.1%}")
+    print(f"  Team B pick 置信度: {bp['team_b_pick_prob']:.1%}")
 
     print(f"\n=== predict_bo3_score({t1}, {t2}) ===")
     print(predict_bo3_score(t1, t2))

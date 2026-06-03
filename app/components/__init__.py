@@ -32,19 +32,18 @@ def get_team_mapping() -> dict[str, str]:
 @st.cache_resource
 def get_team_options() -> list[str]:
     """获取带完整名称的选项列表（用于 selectbox）"""
-    mapping = get_team_mapping()
-    teams = get_teams()
-    # 仅保留映射中有全称的队伍（核心战队）
-    mapped = {k: v for k, v in mapping.items() if k in set(teams)}
-    # 格式: "FNC — FNATIC"
-    options = sorted(f"{k} — {v}" for k, v in mapped.items())
-    if not options:
-        options = sorted(teams)
+    mapping = get_team_mapping()           # {"EDG": "EDward Gaming", ...}
+    teams = get_teams()                    # {"EDward Gaming", "FNATIC", ...}
+    # 反向映射：全称 → 缩写
+    full_to_abbrev = {v: k for k, v in mapping.items()}
+    options = sorted(
+        f"{full_to_abbrev.get(t, t)} — {t}" for t in teams
+    )
     return options
 
 
 def parse_team_option(option: str) -> str:
-    """从选项文本解析出简称"""
+    """从选项文本解析出全称（用于 predictor 查询）"""
     if " — " in option:
-        return option.split(" — ")[0]
+        return option.split(" — ", 1)[1]   # 返回全称部分
     return option

@@ -11,11 +11,15 @@ import plotly.graph_objects as go
 import plotly.express as px
 from app.components.team_selector import select_team
 from app.components import FEATURES_DIR, PROCESSED_DIR
+from app.components.sidebar import show_sidebar
+from app.components.theme import apply_global_styles, page_header
 
 st.set_page_config(page_title="Team Dashboard", page_icon="📊", layout="wide")
 
-st.title("📊 Team Dashboard")
-st.markdown("战队数据概览、趋势分析、地图池深度。")
+apply_global_styles()
+show_sidebar()
+
+page_header("📊 Team Dashboard", "战队数据概览、趋势分析、地图池深度。")
 
 # ==== 数据加载 ====
 @st.cache_resource
@@ -142,7 +146,7 @@ with tab1:
     fig = px.bar(
         yearly, x="Year", y="Win Rate",
         text_auto=".0%",
-        color_discrete_sequence=["#4FC3F7"],
+        color_discrete_sequence=["#38BDF8"],
         labels={"Win Rate": "胜率"},
     )
     fig.update_traces(textposition="outside")
@@ -151,7 +155,7 @@ with tab1:
         yaxis=dict(range=[0, 1], tickformat=".0%"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#ccc",
+        font_color="#AAB7CC",
     )
     st.plotly_chart(fig, width='stretch')
 
@@ -159,9 +163,9 @@ with tab2:
     if len(all_forms) > 0:
         fig = go.Figure()
         for col, name, color in [
-            ("form_5", "近 5 场", "#4FC3F7"),
-            ("form_10", "近 10 场", "#FFB74D"),
-            ("form_20", "近 20 场", "#81C784"),
+            ("form_5", "近 5 场", "#38BDF8"),
+            ("form_10", "近 10 场", "#FBBF24"),
+            ("form_20", "近 20 场", "#86EFAC"),
         ]:
             valid = all_forms[col].dropna()
             fig.add_trace(go.Scatter(
@@ -179,7 +183,7 @@ with tab2:
             yaxis_title="胜率",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#ccc",
+            font_color="#AAB7CC",
             legend=dict(
                 orientation="h", yanchor="bottom", y=1.02,
                 xanchor="right", x=1,
@@ -200,7 +204,7 @@ with tab3:
                 x=ban_counts.values,
                 y=ban_counts.index,
                 orientation="h",
-                marker_color="#EF5350",
+                marker_color="#FF4655",
                 text=ban_counts.values,
                 textposition="outside",
             ))
@@ -209,7 +213,7 @@ with tab3:
                 xaxis_title="次数",
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')
@@ -223,7 +227,7 @@ with tab3:
                 x=pick_counts.values,
                 y=pick_counts.index,
                 orientation="h",
-                marker_color="#4FC3F7",
+                marker_color="#38BDF8",
                 text=pick_counts.values,
                 textposition="outside",
             ))
@@ -232,7 +236,7 @@ with tab3:
                 xaxis_title="次数",
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')
@@ -246,7 +250,7 @@ with tab4:
         y=top_h2h["Opponent"],
         x=top_h2h["Win Rate"],
         orientation="h",
-        marker_color="#4FC3F7",
+        marker_color="#38BDF8",
         text=[f"{w}/{m}" for w, m in zip(top_h2h["Wins"], top_h2h["Matches"])],
         textposition="outside",
         name="胜率",
@@ -257,7 +261,7 @@ with tab4:
         yaxis=dict(autorange="reversed"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#ccc",
+        font_color="#AAB7CC",
         margin=dict(l=10, r=80, t=10, b=10),
     )
     st.plotly_chart(fig, width='stretch')
@@ -294,8 +298,8 @@ with tab5:
             r=[norm[k] for k in stats_labels],
             theta=stats_labels,
             fill="toself",
-            line_color="#4FC3F7",
-            marker_color="#4FC3F7",
+            line_color="#38BDF8",
+            marker_color="#38BDF8",
             opacity=0.7,
         ))
         fig.update_layout(
@@ -305,7 +309,7 @@ with tab5:
             ),
             height=400,
             paper_bgcolor="rgba(0,0,0,0)",
-            font_color="#ccc",
+            font_color="#AAB7CC",
             margin=dict(l=40, r=40, t=10, b=10),
         )
         st.plotly_chart(fig, width='stretch')

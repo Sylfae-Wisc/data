@@ -10,20 +10,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from app.components.team_selector import select_team
 from app.components.prediction_card import show_match_summary
 from src.predictor import predict_match, predict_bp, predict_bo3_score
+from app.components.sidebar import show_sidebar
+from app.components.theme import apply_global_styles, page_header
 
 st.set_page_config(page_title="Match Predictor", page_icon="🎮", layout="wide")
 
-st.title("🎮 Match Predictor")
-st.markdown("赛前/赛中胜负概率预测，基于 XGBoost + 特征工程。")
+apply_global_styles()
+show_sidebar()
+
+page_header("🎮 Match Predictor", "赛前/赛中胜负概率预测，基于 XGBoost + 特征工程。")
 
 # ==== 数据加载 ====
 
 # ==== 计算 ====
 c1, c2 = st.columns(2)
 with c1:
-    team1 = select_team("选择战队 A", key="team1", index=0)
+    team1 = select_team("选择战队 A", key="team1", index=None)
 with c2:
-    team2 = select_team("选择战队 B", key="team2", index=1)
+    team2 = select_team("选择战队 B", key="team2", index=None)
 
 predict_btn = st.button("预测比赛", type="primary", use_container_width=True)
 

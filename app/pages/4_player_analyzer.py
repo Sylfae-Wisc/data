@@ -9,11 +9,15 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from app.components.sidebar import show_sidebar
+from app.components.theme import apply_global_styles, page_header
 
 st.set_page_config(page_title="Player Analyzer", page_icon="👤", layout="wide")
 
-st.title("👤 Player Analyzer")
-st.markdown("选手表现分析、数据对比、状态追踪。")
+apply_global_styles()
+show_sidebar()
+
+page_header("👤 Player Analyzer", "选手表现分析、数据对比、状态追踪。")
 
 # ==== 数据加载 ====
 @st.cache_resource
@@ -28,10 +32,10 @@ def load_all_players():
 
 @st.cache_resource
 def get_player_list(ps):
-    """获取所有选手名称列表（按年份降序，活跃选手优先）"""
-    latest = ps[ps["Year"] == ps["Year"].max()]
-    active = sorted(latest["Player"].unique())
-    return active
+    """获取所有选手名称列表（按年份降序，最近活跃的排前面）"""
+    # 按最近活跃年份降序排列：2026 选手 → 2025 → ... → 2021
+    player_last_year = ps.groupby("Player")["Year"].max().sort_values(ascending=False)
+    return player_last_year.index.tolist()
 
 @st.cache_resource
 def load_overview_data():
@@ -121,7 +125,7 @@ with tab1:
             y=tournament_agg["Rating"],
             mode="lines+markers",
             name="Rating",
-            line=dict(color="#FFB74D", width=2),
+            line=dict(color="#FBBF24", width=2),
             marker=dict(size=8),
             text=tournament_agg["Teams"],
         ))
@@ -131,7 +135,7 @@ with tab1:
             yaxis=dict(range=[0, max(tournament_agg["Rating"].max() * 1.2, 1.5)]),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#ccc",
+            font_color="#AAB7CC",
             margin=dict(b=120),
         )
         st.plotly_chart(fig, width='stretch')
@@ -177,12 +181,12 @@ with tab2:
         fig.add_trace(go.Scatterpolar(
             r=career_norm, theta=radar_cats,
             fill="toself", name="生涯均值",
-            line_color="#4FC3F7", opacity=0.6,
+            line_color="#38BDF8", opacity=0.6,
         ))
         fig.add_trace(go.Scatterpolar(
             r=latest_norm, theta=radar_cats,
             fill="toself", name="最近赛事",
-            line_color="#FFB74D", opacity=0.6,
+            line_color="#FBBF24", opacity=0.6,
         ))
         fig.update_layout(
             polar=dict(
@@ -190,7 +194,7 @@ with tab2:
                 bgcolor="rgba(0,0,0,0)",
             ),
             height=400,
-            paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc",
+            paper_bgcolor="rgba(0,0,0,0)", font_color="#AAB7CC",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
         st.plotly_chart(fig, width='stretch')
@@ -218,7 +222,7 @@ with tab3:
                 x=top_agents["Rounds"].values,
                 y=top_agents.index,
                 orientation="h",
-                marker_color="#CE93D8",
+                marker_color="#C084FC",
                 text=top_agents["Rounds"].values,
                 textposition="outside",
             ))
@@ -226,7 +230,7 @@ with tab3:
                 height=350,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')
@@ -242,7 +246,7 @@ with tab3:
                 x=top_rating["Rating"].values,
                 y=top_rating.index,
                 orientation="h",
-                marker_color="#81C784",
+                marker_color="#86EFAC",
                 text=top_rating["Rating"].round(2),
                 textposition="outside",
             ))
@@ -251,7 +255,7 @@ with tab3:
                 xaxis=dict(range=[0, top_rating["Rating"].max() * 1.2]),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#ccc",
+                font_color="#AAB7CC",
                 margin=dict(l=10, r=40, t=10, b=10),
             )
             st.plotly_chart(fig, width='stretch')
@@ -304,11 +308,11 @@ with tab4:
         fig = go.Figure()
         fig.add_trace(go.Scatterpolar(
             r=p1_norm, theta=radar_cats, fill="toself",
-            name=selected_player, line_color="#4FC3F7", opacity=0.6,
+            name=selected_player, line_color="#38BDF8", opacity=0.6,
         ))
         fig.add_trace(go.Scatterpolar(
             r=p2_norm, theta=radar_cats, fill="toself",
-            name=compare_player, line_color="#FF8A80", opacity=0.6,
+            name=compare_player, line_color="#FB7185", opacity=0.6,
         ))
         fig.update_layout(
             polar=dict(
@@ -316,7 +320,7 @@ with tab4:
                 bgcolor="rgba(0,0,0,0)",
             ),
             height=400,
-            paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc",
+            paper_bgcolor="rgba(0,0,0,0)", font_color="#AAB7CC",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
         st.plotly_chart(fig, width='stretch')
