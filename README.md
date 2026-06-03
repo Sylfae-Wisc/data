@@ -64,6 +64,8 @@
 
 [ryanluong1/valorant-champion-tour-2021-2023-data](https://www.kaggle.com/datasets/ryanluong1/valorant-champion-tour-2021-2023-data)
 
+![alt text](image.png)
+
 确保目录结构为 `data/raw/vct_2021/` ~ `data/raw/vct_2026/`，以及 `data/raw/all_ids/`。
 
 ### 2. 安装依赖
@@ -71,7 +73,7 @@
 此处以conda虚拟环境为例：
 
 ```bash
-conda create -n VCT python=3.10  
+conda create -n VCT python=3.10
 conda activate VCT
 pip install -r requirements.txt
 ```
