@@ -1,6 +1,7 @@
 """Shared visual theme helpers for the Streamlit app."""
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def apply_global_styles() -> None:
@@ -10,14 +11,11 @@ def apply_global_styles() -> None:
 <style>
     :root {
         --vct-red: #ff4655;
-        --vct-red-soft: rgba(255, 70, 85, 0.16);
         --vct-cyan: #22d3ee;
         --vct-blue: #38bdf8;
         --vct-green: #86efac;
         --vct-orange: #fbbf24;
-        --vct-purple: #c084fc;
         --vct-bg: #080b14;
-        --vct-bg-2: #0c1220;
         --vct-surface: rgba(15, 23, 42, 0.92);
         --vct-surface-2: rgba(24, 34, 56, 0.9);
         --vct-border: rgba(226, 232, 240, 0.12);
@@ -129,7 +127,6 @@ def apply_global_styles() -> None:
         background: linear-gradient(90deg, var(--vct-red), var(--vct-cyan));
     }
 
-    .glass-card,
     .pred-card,
     [data-testid="stMetric"],
     div[data-testid="stExpander"],
@@ -138,10 +135,6 @@ def apply_global_styles() -> None:
         border-radius: var(--vct-radius) !important;
         background: var(--vct-surface) !important;
         box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
-    }
-
-    .glass-card {
-        padding: 1rem;
     }
 
     .pred-card {
@@ -262,6 +255,15 @@ def apply_global_styles() -> None:
         border-radius: 50%;
         background: rgba(255,255,255,0.05);
         font-weight: 900;
+    }
+
+    .matchup-meta {
+        margin-top: 1rem;
+        padding-top: 0.85rem;
+        color: var(--vct-text-muted);
+        border-top: 1px solid var(--vct-border);
+        font-size: 0.78rem;
+        line-height: 1.5;
     }
 
     [data-testid="stMetric"] {
@@ -419,10 +421,6 @@ def apply_global_styles() -> None:
         text-align: center;
     }
 
-    div[data-testid="stSidebarNav"] {
-        display: none !important;
-    }
-
     section[data-testid="stSidebar"] a {
         border-radius: var(--vct-radius);
         color: var(--vct-text-secondary) !important;
@@ -434,7 +432,6 @@ def apply_global_styles() -> None:
         background: rgba(255, 70, 85, 0.13);
     }
 
-    .bp-map,
     .veto-chip,
     .final-map-card {
         border-radius: var(--vct-radius);
@@ -492,6 +489,45 @@ def apply_global_styles() -> None:
         font-size: 0.76rem;
     }
 
+    #vct-route-cover {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+        visibility: hidden;
+        opacity: 0;
+        background:
+            radial-gradient(circle at 18% 20%, rgba(255,70,85,0.16), transparent 32%),
+            radial-gradient(circle at 80% 24%, rgba(34,211,238,0.12), transparent 30%),
+            rgba(8, 11, 20, 0.96);
+        transition: opacity 0.12s ease, visibility 0.12s ease;
+    }
+
+    body.vct-route-pending #vct-route-cover {
+        pointer-events: auto;
+        visibility: visible;
+        opacity: 1;
+    }
+
+    .vct-route-loader {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 3px solid rgba(248, 250, 252, 0.16);
+        border-top-color: var(--vct-red);
+        border-right-color: var(--vct-cyan);
+        animation: vct-spin 0.75s linear infinite;
+        box-shadow: 0 0 34px rgba(255,70,85,0.22);
+    }
+
+    @keyframes vct-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
     @media (max-width: 760px) {
         .main .block-container {
             padding-left: 1rem;
@@ -517,8 +553,59 @@ def apply_global_styles() -> None:
         }
     }
 </style>
+<div id="vct-route-cover" aria-hidden="true">
+    <div class="vct-route-loader"></div>
+</div>
         """,
         unsafe_allow_html=True,
+    )
+    components.html(
+        """
+<script>
+(() => {
+  try {
+    const parentWindow = window.parent;
+    const parentDoc = parentWindow.document;
+    const pendingClass = "vct-route-pending";
+
+    parentDoc.body.classList.remove(pendingClass);
+    parentWindow.clearTimeout(parentWindow.__vctRouteGuardTimer);
+
+    if (parentWindow.__vctRouteGuardBound) {
+      return;
+    }
+
+    parentWindow.__vctRouteGuardBound = true;
+    parentDoc.addEventListener("click", (event) => {
+      const link = event.target.closest("a[href]");
+      if (!link) {
+        return;
+      }
+
+      if (link.target === "_blank" || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      const currentUrl = new URL(parentDoc.location.href);
+      const nextUrl = new URL(link.href, currentUrl.href);
+      if (nextUrl.origin !== currentUrl.origin || nextUrl.href === currentUrl.href) {
+        return;
+      }
+
+      parentDoc.body.classList.add(pendingClass);
+      parentWindow.clearTimeout(parentWindow.__vctRouteGuardTimer);
+      parentWindow.__vctRouteGuardTimer = parentWindow.setTimeout(() => {
+        parentDoc.body.classList.remove(pendingClass);
+      }, 5000);
+    }, true);
+  } catch (error) {
+    // The app still works if the browser blocks parent-frame scripting.
+  }
+})();
+</script>
+        """,
+        height=0,
+        width=0,
     )
 
 

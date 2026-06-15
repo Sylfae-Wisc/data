@@ -27,8 +27,14 @@ FEATURE_COLS = [
     "diff_rating", "diff_kd", "diff_fk",
 ]
 
-# 只需 form + H2H 即可推理的特征索引（其余会被 imputer 填充）
-PREMATCH_FEATURE_IDX = list(range(10))  # 前 10 个是 form + h2h
+# 赛前预测使用最近 N 场队伍表现均值，填充模型最重要的统计差值特征。
+RECENT_STAT_WINDOW = 10
+LONG_TERM_STAT_WEIGHT = 0.85
+STAT_KEYS = ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]
+H2H_MATCH_DECAY = 0.65
+H2H_YEAR_DECAY = 0.8
+H2H_FULL_WEIGHT_AT = 2.0
+H2H_MAX_BLEND_WEIGHT = 0.18
 
 # 缓存
 _model: any = None
@@ -37,6 +43,10 @@ _feature_df: Optional[pd.DataFrame] = None
 _draft_df: Optional[pd.DataFrame] = None
 _team_alias_map: dict[str, str] = {}
 _team_form_cache: dict = {}
+_team_long_term_stats_cache: dict = {}
+_team_recent_stats_cache: dict = {}
+_team_strength_stats_cache: dict = {}
+_decayed_h2h_cache: dict = {}
 _team_ban_cache: dict = {}
 _team_pick_cache: dict = {}
 
@@ -129,6 +139,161 @@ def _get_h2h(team1: str, team2: str) -> float:
     return 0.5
 
 
+def _match_result_for_team(row: pd.Series, team: str) -> float:
+    """Return 1/0.5/0 from team's perspective for one historical match."""
+    team_a_score = row["Team A Score"]
+    team_b_score = row["Team B Score"]
+    if pd.isna(team_a_score) or pd.isna(team_b_score):
+        return 0.5
+    if team_a_score == team_b_score:
+        return 0.5
+
+    team_a_won = team_a_score > team_b_score
+    if row["Team A"] == team:
+        return 1.0 if team_a_won else 0.0
+    return 0.0 if team_a_won else 1.0
+
+
+def _get_decayed_h2h(team1: str, team2: str) -> dict:
+    """时间衰减 H2H：最近交手影响最大，久远交手逐步变弱。"""
+    team1 = _normalize_team_name(team1)
+    team2 = _normalize_team_name(team2)
+    cache_key = (team1, team2)
+    if cache_key in _decayed_h2h_cache:
+        return _decayed_h2h_cache[cache_key]
+
+    df = _feature_df
+    mask = (
+        ((df["Team A"] == team1) & (df["Team B"] == team2)) |
+        ((df["Team A"] == team2) & (df["Team B"] == team1))
+    )
+    matches = df[mask].sort_values(["Year", "tord"])
+    if matches.empty:
+        result = {
+            "ratio": 0.5,
+            "matches": 0,
+            "effective_weight": 0.0,
+            "blend_weight": 0.0,
+        }
+        _decayed_h2h_cache[cache_key] = result
+        return result
+
+    latest_year = int(df["Year"].max())
+    weighted_wins = 0.0
+    total_weight = 0.0
+
+    for match_age, (_, row) in enumerate(matches.iloc[::-1].iterrows()):
+        year_age = max(0, latest_year - int(row["Year"]))
+        weight = (H2H_MATCH_DECAY ** match_age) * (H2H_YEAR_DECAY ** year_age)
+        weighted_wins += _match_result_for_team(row, team1) * weight
+        total_weight += weight
+
+    ratio = weighted_wins / total_weight if total_weight else 0.5
+    confidence = min(total_weight / H2H_FULL_WEIGHT_AT, 1.0)
+    result = {
+        "ratio": float(ratio),
+        "matches": int(len(matches)),
+        "effective_weight": float(total_weight),
+        "blend_weight": float(H2H_MAX_BLEND_WEIGHT * confidence),
+    }
+    _decayed_h2h_cache[cache_key] = result
+    return result
+
+
+def _blend_with_decayed_h2h(prob: float, team1: str, team2: str, mode: str) -> tuple[float, dict]:
+    """Use decayed H2H as a bounded post-model calibration signal."""
+    h2h = _get_decayed_h2h(team1, team2)
+    blend_weight = h2h["blend_weight"]
+    if mode == "in_match":
+        blend_weight *= 0.45
+
+    adjusted = prob * (1 - blend_weight) + h2h["ratio"] * blend_weight
+    return float(min(max(adjusted, 0.01), 0.99)), {**h2h, "blend_weight": blend_weight}
+
+
+def _get_team_stat_history(team: str) -> pd.DataFrame:
+    """Return team stat rows from both sides in chronological order."""
+    team = _normalize_team_name(team)
+    df = _feature_df
+    a_cols = [f"team_a_{key}" for key in STAT_KEYS]
+    b_cols = [f"team_b_{key}" for key in STAT_KEYS]
+
+    as_a = df[df["Team A"] == team][["Year", "tord"] + a_cols].rename(
+        columns={f"team_a_{key}": key for key in STAT_KEYS}
+    )
+    as_b = df[df["Team B"] == team][["Year", "tord"] + b_cols].rename(
+        columns={f"team_b_{key}": key for key in STAT_KEYS}
+    )
+    history = pd.concat([as_a, as_b], ignore_index=True).sort_values(["Year", "tord"])
+    if history.empty:
+        return history
+
+    history[STAT_KEYS] = history[STAT_KEYS].apply(pd.to_numeric, errors="coerce")
+    return history
+
+
+def _mean_stats(rows: pd.DataFrame) -> dict:
+    """Convert stat rows into a plain mean-stat dict."""
+    if rows.empty:
+        return {key: np.nan for key in STAT_KEYS}
+
+    return {
+        key: float(value) if not pd.isna(value) else np.nan
+        for key, value in rows[STAT_KEYS].mean().items()
+    }
+
+
+def _get_team_long_term_stats(team: str) -> dict:
+    """获取队伍全历史平均表现，作为基础实力画像。"""
+    team = _normalize_team_name(team)
+    if team in _team_long_term_stats_cache:
+        return _team_long_term_stats_cache[team]
+
+    result = _mean_stats(_get_team_stat_history(team))
+    _team_long_term_stats_cache[team] = result
+    return result
+
+
+def _get_team_recent_stats(team: str, n: int = RECENT_STAT_WINDOW) -> dict:
+    """获取队伍最近 N 场的平均表现，用作赛前实力对比特征。"""
+    team = _normalize_team_name(team)
+    cache_key = (team, n)
+    if cache_key in _team_recent_stats_cache:
+        return _team_recent_stats_cache[cache_key]
+
+    result = _mean_stats(_get_team_stat_history(team).tail(n))
+    _team_recent_stats_cache[cache_key] = result
+    return result
+
+
+def _blend_stat_value(long_value: float, recent_value: float) -> float:
+    """Blend long-term strength with recent form while handling sparse data."""
+    if pd.isna(long_value) and pd.isna(recent_value):
+        return np.nan
+    if pd.isna(long_value):
+        return recent_value
+    if pd.isna(recent_value):
+        return long_value
+    return LONG_TERM_STAT_WEIGHT * long_value + (1 - LONG_TERM_STAT_WEIGHT) * recent_value
+
+
+def _get_team_strength_stats(team: str) -> dict:
+    """长期实力为主、近期状态为辅的赛前统计画像。"""
+    team = _normalize_team_name(team)
+    if team in _team_strength_stats_cache:
+        return _team_strength_stats_cache[team]
+
+    long_term = _get_team_long_term_stats(team)
+    recent = _get_team_recent_stats(team)
+    result = {
+        key: _blend_stat_value(long_term.get(key, np.nan), recent.get(key, np.nan))
+        for key in STAT_KEYS
+    }
+
+    _team_strength_stats_cache[team] = result
+    return result
+
+
 def _build_match_feature_values(
     team1: str,
     team2: str,
@@ -152,11 +317,15 @@ def _build_match_feature_values(
         "h2h_ratio": _get_h2h(team1, team2),
     }
 
-    if stats_a is not None and stats_b is not None:
-        diff_keys = ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]
-        diff = {k: stats_a.get(k, np.nan) - stats_b.get(k, np.nan) for k in diff_keys}
-    else:
-        diff = {k: np.nan for k in ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]}
+    if stats_a is None:
+        stats_a = _get_team_strength_stats(team1)
+    if stats_b is None:
+        stats_b = _get_team_strength_stats(team2)
+
+    diff = {
+        key: stats_a.get(key, np.nan) - stats_b.get(key, np.nan)
+        for key in STAT_KEYS
+    }
 
     feature_values.update({
         "diff_acs": diff["acs"],
@@ -212,11 +381,18 @@ def predict_match(
     p_reverse = _raw_match_prob(team2, team1, stats_b, stats_a)
     prob = (p_forward + (1 - p_reverse)) / 2
     mode = "in_match" if stats_a is not None and stats_b is not None else "pre_match"
+    prob, h2h = _blend_with_decayed_h2h(prob, team1, team2, mode)
 
     return {
         "team1_win_prob": round(prob, 4),
         "team2_win_prob": round(1 - prob, 4),
         "mode": mode,
+        "feature_mode": "team_strength_blend" if mode == "pre_match" else "live_stats",
+        "stat_window": RECENT_STAT_WINDOW if mode == "pre_match" else None,
+        "long_term_weight": LONG_TERM_STAT_WEIGHT if mode == "pre_match" else None,
+        "h2h_ratio": round(h2h["ratio"], 4),
+        "h2h_matches": h2h["matches"],
+        "h2h_weight": round(h2h["blend_weight"], 4),
     }
 
 
@@ -420,7 +596,7 @@ if __name__ == "__main__":
 
     print(f"\n=== predict_bp({t1}, {t2}) ===")
     bp = predict_bp(t1, t2)
-    print(f"  Veto 流程:")
+    print(f"  BP 过程:")
     for step in bp["veto_sequence"]:
         s = step
         tag = f"Team {s['team']}" if s["team"] != "—" else "自动"

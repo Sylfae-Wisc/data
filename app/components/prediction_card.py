@@ -11,12 +11,27 @@ def show_win_prob(result: dict, team1: str, team2: str):
     p2 = result["team2_win_prob"]
     mode = result.get("mode", "pre_match")
 
-    mode_label = "赛中预测" if mode == "in_match" else "赛前预测"
+    if mode == "in_match":
+        mode_label = "赛中预测"
+    elif result.get("feature_mode") == "team_strength_blend":
+        mode_label = f"赛前预测"
+    else:
+        mode_label = "赛前预测"
     mode_color = "#86EFAC" if mode == "in_match" else "#FBBF24"
     team1_safe = escape(team1)
     team2_safe = escape(team2)
     p1_width = max(0, min(p1, 1)) * 100
     p2_width = max(0, min(p2, 1)) * 100
+    h2h_matches = result.get("h2h_matches", 0)
+    h2h_ratio = result.get("h2h_ratio", 0.5)
+    h2h_weight = result.get("h2h_weight", 0.0)
+    if h2h_matches:
+        h2h_note = (
+            f"历史交手时间衰减参考：{team1_safe} {h2h_ratio:.1%} · "
+            f"{h2h_matches} 场 · 校准权重 {h2h_weight:.0%}"
+        )
+    else:
+        h2h_note = "暂无历史交手记录，本场预测不做 H2H 校准。"
 
     st.markdown(
         f"""
@@ -42,6 +57,7 @@ def show_win_prob(result: dict, team1: str, team2: str):
             </div>
         </div>
     </div>
+    <div class="matchup-meta">{h2h_note}</div>
 </div>
         """,
         unsafe_allow_html=True,

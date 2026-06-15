@@ -5,6 +5,9 @@ backgroundColor = "#080B14"
 secondaryBackgroundColor = "#0F172A"
 textColor = "#F8FAFC"
 
+[client]
+showSidebarNavigation = false
+
 [server]
 maxUploadSize = 50
 
