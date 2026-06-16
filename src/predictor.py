@@ -42,6 +42,10 @@ H2H_YEAR_DECAY = 0.8
 H2H_FULL_WEIGHT_AT = 2.0
 H2H_MAX_BLEND_WEIGHT = 0.18
 IN_MATCH_H2H_WEIGHT_MULTIPLIER = 0.45
+MAP_ADVANTAGE_WEIGHT = 0.08
+MAP_PROBABILITY_FLOOR = 0.05
+MAP_PROBABILITY_CEILING = 0.95
+MAP_CALIBRATION_ITERATIONS = 40
 
 TEAM_FORM_COLUMN_MAP = {
     "Team A": {f"team_a_form_{window}": f"form_{window}" for window in FORM_WINDOWS},
@@ -688,23 +692,131 @@ def predict_bp(team1: str, team2: str) -> dict:
     return result
 
 
+def _series_prob_from_map_prob(map_prob: float) -> float:
+    """Best-of-three series win probability from an independent map win rate."""
+    return 3 * map_prob * map_prob - 2 * map_prob * map_prob * map_prob
+
+
+def _map_prob_from_series_prob(series_prob: float) -> float:
+    """Invert BO3 series probability back to the implied single-map win rate."""
+    low, high = 0.0, 1.0
+    for _ in range(MAP_CALIBRATION_ITERATIONS):
+        mid = (low + high) / 2
+        if _series_prob_from_map_prob(mid) < series_prob:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2
+
+
+def _bo3_series_prob_from_map_probs(map_probs: list[float]) -> float:
+    """Series win probability from ordered Map1/Map2/Map3 win rates."""
+    map1, map2, map3 = map_probs
+    return (
+        map1 * map2 +
+        map1 * (1 - map2) * map3 +
+        (1 - map1) * map2 * map3
+    )
+
+
+def _bo3_score_probs_from_map_probs(map_probs: list[float]) -> dict:
+    """Split ordered map win rates into BO3 score probabilities."""
+    map1, map2, map3 = map_probs
+    return {
+        "2-0": map1 * map2,
+        "2-1": map1 * (1 - map2) * map3 + (1 - map1) * map2 * map3,
+        "1-2": map1 * (1 - map2) * (1 - map3) + (1 - map1) * map2 * (1 - map3),
+        "0-2": (1 - map1) * (1 - map2),
+    }
+
+
+def _clamp_map_probability(value: float) -> float:
+    return min(max(value, MAP_PROBABILITY_FLOOR), MAP_PROBABILITY_CEILING)
+
+
+def _raw_map_win_probs(
+    team1: str,
+    team2: str,
+    maps: list[str],
+    base_map_prob: float,
+) -> list[float]:
+    """Apply BP map advantage as a per-map adjustment around the base map rate."""
+    score_a = _compute_map_score(team1)
+    score_b = _compute_map_score(team2)
+    probs = []
+    for map_name in maps:
+        advantage = score_a.get(map_name, 0.0) - score_b.get(map_name, 0.0)
+        probs.append(_clamp_map_probability(
+            base_map_prob + MAP_ADVANTAGE_WEIGHT * advantage
+        ))
+    return probs
+
+
+def _calibrate_map_probs_to_series(
+    raw_map_probs: list[float],
+    target_series_prob: float,
+) -> list[float]:
+    """Shift map probabilities together so their BO3 series probability matches target."""
+    low = MAP_PROBABILITY_FLOOR - max(raw_map_probs)
+    high = MAP_PROBABILITY_CEILING - min(raw_map_probs)
+
+    for _ in range(MAP_CALIBRATION_ITERATIONS):
+        shift = (low + high) / 2
+        shifted = [
+            _clamp_map_probability(prob + shift)
+            for prob in raw_map_probs
+        ]
+        if _bo3_series_prob_from_map_probs(shifted) < target_series_prob:
+            low = shift
+        else:
+            high = shift
+
+    final_shift = (low + high) / 2
+    return [
+        _clamp_map_probability(prob + final_shift)
+        for prob in raw_map_probs
+    ]
+
+
+def _round_score_probs(score_probs: dict, series_prob: float) -> dict:
+    """Round display probabilities while preserving win/loss totals."""
+    win_2_0 = round(score_probs["2-0"], 4)
+    win_2_1 = round(series_prob - win_2_0, 4)
+    lose_0_2 = round(score_probs["0-2"], 4)
+    lose_1_2 = round((1 - series_prob) - lose_0_2, 4)
+    return {
+        "2-0": win_2_0,
+        "2-1": win_2_1,
+        "1-2": lose_1_2,
+        "0-2": lose_0_2,
+    }
+
+
 def predict_bo3_score(team1: str, team2: str) -> dict:
     """预测 BO3 比分概率
 
-    链式乘法：每张地图独立且概率相同（近似）。
+    根据 BP 预测的三张地图分别计算单图胜率，再拆分 BO3 比分。
 
     Returns:
         {"2-0": 0.25, "2-1": 0.30, "1-2": 0.25, "0-2": 0.20}
     """
     result = predict_match(team1, team2)
-    p = result["team1_win_prob"]
-    q = 1 - p
+    series_p = result["team1_win_prob"]
+    base_map_prob = _map_prob_from_series_prob(series_p)
+    bp_result = predict_bp(team1, team2)
+    maps = bp_result.get("final_maps", [])
 
+    if len(maps) != 3:
+        map_probs = [base_map_prob, base_map_prob, base_map_prob]
+    else:
+        raw_map_probs = _raw_map_win_probs(team1, team2, maps, base_map_prob)
+        map_probs = _calibrate_map_probs_to_series(raw_map_probs, series_p)
+
+    score_probs = _bo3_score_probs_from_map_probs(map_probs)
     return {
-        "2-0": round(p * p, 4),
-        "2-1": round(2 * p * p * q, 4),
-        "1-2": round(2 * p * q * q, 4),
-        "0-2": round(q * q, 4),
+        **_round_score_probs(score_probs, series_p),
+        "bo3_maps": maps,
+        "bo3_map_win_probs": [round(prob, 4) for prob in map_probs],
     }
 
 

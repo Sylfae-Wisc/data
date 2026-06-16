@@ -152,6 +152,9 @@ def show_bp(result: dict, team1: str, team2: str):
 
 def show_bo3(result: dict):
     """展示 BO3 比分预测"""
+    maps = result.get("bo3_maps", [])
+    map_probs = result.get("bo3_map_win_probs", [])
+
     st.markdown("""
     <div class="pred-card">
         <div class="card-header">
@@ -159,6 +162,13 @@ def show_bo3(result: dict):
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    if len(maps) == 3 and len(map_probs) == 3:
+        map_labels = [
+            f"Map {idx + 1} · {escape(map_name)}：{prob:.1%}"
+            for idx, (map_name, prob) in enumerate(zip(maps, map_probs))
+        ]
+        st.caption(" | ".join(map_labels))
 
     outcomes = ["2-0", "2-1", "1-2", "0-2"]
     probs = [result.get(o, 0) for o in outcomes]
@@ -184,7 +194,7 @@ def show_bo3(result: dict):
         font=dict(color="#AAB7CC"),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("链式乘法：每图独立同分布，P(2-0) = p²")
+    st.caption("基于 BP 预测地图分别估计单图胜率，并校准到整场胜负概率。")
 
 
 def show_match_summary(result: dict, team1: str, team2: str):
