@@ -1,4 +1,5 @@
 # Data files (large CSVs, not suitable for version control)
+data/raw/*
 data/processed/*
 data/features/*
 !data/raw/.gitkeep
