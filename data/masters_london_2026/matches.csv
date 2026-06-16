@@ -1,0 +1,11 @@
+round,group,team_a,team_b,score_a,score_b,winner
+1,Round 1,Xi Lai Gaming,NRG Esports,0,2,NRG Esports
+1,Round 1,Team Vitality,Dragon Ranger Gaming,2,0,Team Vitality
+1,Round 1,FULL SENSE,FUT Esports,0,2,FUT Esports
+1,Round 1,LEVIATÁN,Global Esports,2,1,LEVIATÁN
+2,1-0 Group,Team Vitality,FUT Esports,2,1,Team Vitality
+2,1-0 Group,NRG Esports,LEVIATÁN,1,2,LEVIATÁN
+2,0-1 Group,Dragon Ranger Gaming,Xi Lai Gaming,1,2,Xi Lai Gaming
+2,0-1 Group,Global Esports,FULL SENSE,2,1,Global Esports
+3,1-1 Group,FUT Esports,NRG Esports,2,1,FUT Esports
+3,1-1 Group,Global Esports,Xi Lai Gaming,1,2,Xi Lai Gaming
