@@ -31,10 +31,34 @@ FEATURE_COLS = [
 RECENT_STAT_WINDOW = 10
 LONG_TERM_STAT_WEIGHT = 0.85
 STAT_KEYS = ["acs", "kast", "adr", "hs_pct", "rating", "kd", "fk"]
+FORM_WINDOWS = [5, 10, 20]
+FORM_KEYS = [f"form_{window}" for window in FORM_WINDOWS]
+DEFAULT_FORM_VALUE = 0.5
+DEFAULT_H2H_RATIO = 0.5
+MIN_PROBABILITY = 0.01
+MAX_PROBABILITY = 0.99
 H2H_MATCH_DECAY = 0.65
 H2H_YEAR_DECAY = 0.8
 H2H_FULL_WEIGHT_AT = 2.0
 H2H_MAX_BLEND_WEIGHT = 0.18
+IN_MATCH_H2H_WEIGHT_MULTIPLIER = 0.45
+
+TEAM_FORM_COLUMN_MAP = {
+    "Team A": {f"team_a_form_{window}": f"form_{window}" for window in FORM_WINDOWS},
+    "Team B": {f"team_b_form_{window}": f"form_{window}" for window in FORM_WINDOWS},
+}
+
+TEAM_STAT_COLUMN_MAP = {
+    "Team A": {f"team_a_{key}": key for key in STAT_KEYS},
+    "Team B": {f"team_b_{key}": key for key in STAT_KEYS},
+}
+
+EMPTY_H2H_RESULT = {
+    "ratio": DEFAULT_H2H_RATIO,
+    "matches": 0,
+    "effective_weight": 0.0,
+    "blend_weight": 0.0,
+}
 
 # 缓存
 _model: any = None
@@ -51,6 +75,87 @@ _team_ban_cache: dict = {}
 _team_pick_cache: dict = {}
 
 
+def _canonical_team_names(feature_df: pd.DataFrame) -> list[str]:
+    return sorted(set(feature_df["Team A"]).union(set(feature_df["Team B"])))
+
+
+def _add_team_alias(alias_map: dict[str, str], alias: str, canonical: str) -> None:
+    alias = str(alias).strip()
+    if alias:
+        alias_map[alias.lower()] = canonical
+
+
+def _load_team_alias_map(teams: list[str]) -> dict[str, str]:
+    alias_map = {team.strip().lower(): team for team in teams}
+    mapping_path = DATA_DIR / "raw" / "all_ids" / "all_teams_mapping.csv"
+    if not mapping_path.exists():
+        return alias_map
+
+    mapping = pd.read_csv(mapping_path)
+    for _, row in mapping.iterrows():
+        full_name = str(row.get("Full Name", "")).strip()
+        abbreviated = str(row.get("Abbreviated", "")).strip()
+        if full_name in teams:
+            _add_team_alias(alias_map, full_name, full_name)
+            _add_team_alias(alias_map, abbreviated, full_name)
+
+    return alias_map
+
+
+def _default_form() -> dict:
+    return {key: DEFAULT_FORM_VALUE for key in FORM_KEYS}
+
+
+def _sanitize_form_values(values: dict) -> dict:
+    return {
+        key: DEFAULT_FORM_VALUE
+        if pd.isna(value)
+        else value
+        for key, value in values.items()
+    }
+
+
+def _team_form_slice(team: str, side: str) -> pd.DataFrame:
+    column_map = TEAM_FORM_COLUMN_MAP[side]
+    return _feature_df[_feature_df[side] == team][
+        ["Year", "tord"] + list(column_map.keys())
+    ].rename(columns=column_map)
+
+
+def _team_stat_slice(team: str, side: str) -> pd.DataFrame:
+    column_map = TEAM_STAT_COLUMN_MAP[side]
+    return _feature_df[_feature_df[side] == team][
+        ["Year", "tord"] + list(column_map.keys())
+    ].rename(columns=column_map)
+
+
+def _chronological_history(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    return pd.concat(frames, ignore_index=True).sort_values(["Year", "tord"])
+
+
+def _empty_h2h_result() -> dict:
+    return dict(EMPTY_H2H_RESULT)
+
+
+def _h2h_cache_key(team1: str, team2: str) -> tuple[str, str]:
+    return team1, team2
+
+
+def _h2h_match_mask(df: pd.DataFrame, team1: str, team2: str) -> pd.Series:
+    return (
+        ((df["Team A"] == team1) & (df["Team B"] == team2)) |
+        ((df["Team A"] == team2) & (df["Team B"] == team1))
+    )
+
+
+def _decayed_match_weight(match_age: int, year_age: int) -> float:
+    return (H2H_MATCH_DECAY ** match_age) * (H2H_YEAR_DECAY ** year_age)
+
+
+def _clamp_probability(value: float) -> float:
+    return min(max(value, MIN_PROBABILITY), MAX_PROBABILITY)
+
+
 def _load_resources():
     global _model, _imputer, _feature_df, _draft_df, _team_alias_map
     if _model is None:
@@ -58,19 +163,7 @@ def _load_resources():
         _imputer = joblib.load(MODELS_DIR / "imputer.pkl")
         _feature_df = pd.read_parquet(FEATURES_DIR / "match_features.parquet")
         _draft_df = pd.read_parquet(PROCESSED_DIR / "draft_dataset.parquet")
-        teams = sorted(set(_feature_df["Team A"]).union(set(_feature_df["Team B"])))
-        _team_alias_map = {team.strip().lower(): team for team in teams}
-
-        mapping_path = DATA_DIR / "raw" / "all_ids" / "all_teams_mapping.csv"
-        if mapping_path.exists():
-            mapping = pd.read_csv(mapping_path)
-            for _, row in mapping.iterrows():
-                full_name = str(row.get("Full Name", "")).strip()
-                abbreviated = str(row.get("Abbreviated", "")).strip()
-                if full_name in teams:
-                    _team_alias_map[full_name.lower()] = full_name
-                    if abbreviated:
-                        _team_alias_map[abbreviated.lower()] = full_name
+        _team_alias_map = _load_team_alias_map(_canonical_team_names(_feature_df))
 
 
 def _normalize_team_name(team: str) -> str:
@@ -86,37 +179,21 @@ def _get_team_form(team: str) -> dict:
     if team in _team_form_cache:
         return _team_form_cache[team]
 
-    df = _feature_df
-    as_a = df[df["Team A"] == team][
-        ["Year", "tord", "team_a_form_5", "team_a_form_10", "team_a_form_20"]
-    ].rename(columns={
-        "team_a_form_5": "form_5",
-        "team_a_form_10": "form_10",
-        "team_a_form_20": "form_20",
-    })
-    as_b = df[df["Team B"] == team][
-        ["Year", "tord", "team_b_form_5", "team_b_form_10", "team_b_form_20"]
-    ].rename(columns={
-        "team_b_form_5": "form_5",
-        "team_b_form_10": "form_10",
-        "team_b_form_20": "form_20",
-    })
-
-    history = pd.concat([as_a, as_b], ignore_index=True).sort_values(["Year", "tord"])
+    history = _chronological_history([
+        _team_form_slice(team, "Team A"),
+        _team_form_slice(team, "Team B"),
+    ])
     if history.empty:
-        result = {"form_5": 0.5, "form_10": 0.5, "form_20": 0.5}
+        result = _default_form()
     else:
         last = history.iloc[-1]
         result = {
-            "form_5": last["form_5"],
-            "form_10": last["form_10"],
-            "form_20": last["form_20"],
+            key: last[key]
+            for key in FORM_KEYS
         }
 
     # 处理 NaN（新队伍没有足够历史）
-    for k in result:
-        if pd.isna(result[k]):
-            result[k] = 0.5
+    result = _sanitize_form_values(result)
 
     _team_form_cache[team] = result
     return result
@@ -136,7 +213,7 @@ def _get_h2h(team1: str, team2: str) -> float:
     elif mask_b.any():
         last = df[mask_b].iloc[-1]
         return 1.0 - float(last["h2h_ratio"])
-    return 0.5
+    return DEFAULT_H2H_RATIO
 
 
 def _match_result_for_team(row: pd.Series, team: str) -> float:
@@ -158,23 +235,15 @@ def _get_decayed_h2h(team1: str, team2: str) -> dict:
     """时间衰减 H2H：最近交手影响最大，久远交手逐步变弱。"""
     team1 = _normalize_team_name(team1)
     team2 = _normalize_team_name(team2)
-    cache_key = (team1, team2)
+    cache_key = _h2h_cache_key(team1, team2)
     if cache_key in _decayed_h2h_cache:
         return _decayed_h2h_cache[cache_key]
 
     df = _feature_df
-    mask = (
-        ((df["Team A"] == team1) & (df["Team B"] == team2)) |
-        ((df["Team A"] == team2) & (df["Team B"] == team1))
-    )
+    mask = _h2h_match_mask(df, team1, team2)
     matches = df[mask].sort_values(["Year", "tord"])
     if matches.empty:
-        result = {
-            "ratio": 0.5,
-            "matches": 0,
-            "effective_weight": 0.0,
-            "blend_weight": 0.0,
-        }
+        result = _empty_h2h_result()
         _decayed_h2h_cache[cache_key] = result
         return result
 
@@ -184,11 +253,11 @@ def _get_decayed_h2h(team1: str, team2: str) -> dict:
 
     for match_age, (_, row) in enumerate(matches.iloc[::-1].iterrows()):
         year_age = max(0, latest_year - int(row["Year"]))
-        weight = (H2H_MATCH_DECAY ** match_age) * (H2H_YEAR_DECAY ** year_age)
+        weight = _decayed_match_weight(match_age, year_age)
         weighted_wins += _match_result_for_team(row, team1) * weight
         total_weight += weight
 
-    ratio = weighted_wins / total_weight if total_weight else 0.5
+    ratio = weighted_wins / total_weight if total_weight else DEFAULT_H2H_RATIO
     confidence = min(total_weight / H2H_FULL_WEIGHT_AT, 1.0)
     result = {
         "ratio": float(ratio),
@@ -205,26 +274,19 @@ def _blend_with_decayed_h2h(prob: float, team1: str, team2: str, mode: str) -> t
     h2h = _get_decayed_h2h(team1, team2)
     blend_weight = h2h["blend_weight"]
     if mode == "in_match":
-        blend_weight *= 0.45
+        blend_weight *= IN_MATCH_H2H_WEIGHT_MULTIPLIER
 
     adjusted = prob * (1 - blend_weight) + h2h["ratio"] * blend_weight
-    return float(min(max(adjusted, 0.01), 0.99)), {**h2h, "blend_weight": blend_weight}
+    return float(_clamp_probability(adjusted)), {**h2h, "blend_weight": blend_weight}
 
 
 def _get_team_stat_history(team: str) -> pd.DataFrame:
     """Return team stat rows from both sides in chronological order."""
     team = _normalize_team_name(team)
-    df = _feature_df
-    a_cols = [f"team_a_{key}" for key in STAT_KEYS]
-    b_cols = [f"team_b_{key}" for key in STAT_KEYS]
-
-    as_a = df[df["Team A"] == team][["Year", "tord"] + a_cols].rename(
-        columns={f"team_a_{key}": key for key in STAT_KEYS}
-    )
-    as_b = df[df["Team B"] == team][["Year", "tord"] + b_cols].rename(
-        columns={f"team_b_{key}": key for key in STAT_KEYS}
-    )
-    history = pd.concat([as_a, as_b], ignore_index=True).sort_values(["Year", "tord"])
+    history = _chronological_history([
+        _team_stat_slice(team, "Team A"),
+        _team_stat_slice(team, "Team B"),
+    ])
     if history.empty:
         return history
 
@@ -294,6 +356,45 @@ def _get_team_strength_stats(team: str) -> dict:
     return result
 
 
+def _form_feature_values(form_a: dict, form_b: dict) -> dict:
+    return {
+        **{
+            f"team_a_form_{window}": form_a[f"form_{window}"]
+            for window in FORM_WINDOWS
+        },
+        **{
+            f"team_b_form_{window}": form_b[f"form_{window}"]
+            for window in FORM_WINDOWS
+        },
+        **{
+            f"form_diff_{window}": (
+                form_a[f"form_{window}"] - form_b[f"form_{window}"]
+            )
+            for window in FORM_WINDOWS
+        },
+    }
+
+
+def _stat_diff_values(stats_a: dict, stats_b: dict) -> dict:
+    return {
+        f"diff_{key}": stats_a.get(key, np.nan) - stats_b.get(key, np.nan)
+        for key in STAT_KEYS
+    }
+
+
+def _resolve_match_stats(
+    team1: str,
+    team2: str,
+    stats_a: Optional[dict],
+    stats_b: Optional[dict],
+) -> tuple[dict, dict]:
+    if stats_a is None:
+        stats_a = _get_team_strength_stats(team1)
+    if stats_b is None:
+        stats_b = _get_team_strength_stats(team2)
+    return stats_a, stats_b
+
+
 def _build_match_feature_values(
     team1: str,
     team2: str,
@@ -305,37 +406,12 @@ def _build_match_feature_values(
     f2 = _get_team_form(team2)
 
     feature_values = {
-        "team_a_form_5": f1["form_5"],
-        "team_b_form_5": f2["form_5"],
-        "form_diff_5": f1["form_5"] - f2["form_5"],
-        "team_a_form_10": f1["form_10"],
-        "team_b_form_10": f2["form_10"],
-        "form_diff_10": f1["form_10"] - f2["form_10"],
-        "team_a_form_20": f1["form_20"],
-        "team_b_form_20": f2["form_20"],
-        "form_diff_20": f1["form_20"] - f2["form_20"],
+        **_form_feature_values(f1, f2),
         "h2h_ratio": _get_h2h(team1, team2),
     }
 
-    if stats_a is None:
-        stats_a = _get_team_strength_stats(team1)
-    if stats_b is None:
-        stats_b = _get_team_strength_stats(team2)
-
-    diff = {
-        key: stats_a.get(key, np.nan) - stats_b.get(key, np.nan)
-        for key in STAT_KEYS
-    }
-
-    feature_values.update({
-        "diff_acs": diff["acs"],
-        "diff_kast": diff["kast"],
-        "diff_adr": diff["adr"],
-        "diff_hs_pct": diff["hs_pct"],
-        "diff_rating": diff["rating"],
-        "diff_kd": diff["kd"],
-        "diff_fk": diff["fk"],
-    })
+    stats_a, stats_b = _resolve_match_stats(team1, team2, stats_a, stats_b)
+    feature_values.update(_stat_diff_values(stats_a, stats_b))
 
     return feature_values
 
@@ -401,6 +477,12 @@ def predict_match(
 
 # 当前比赛图池
 VETO_MAPS = ["Split", "Pearl", "Haven", "Breeze", "Fracture", "Ascent", "Lotus"]
+TEAM_A = "A"
+TEAM_B = "B"
+DECIDER_TEAM = "—"
+BAN_ACTION = "ban"
+PICK_ACTION = "pick"
+DECIDER_ACTION = "decider"
 
 
 def _team_ban_pick(team: str):
@@ -455,6 +537,61 @@ def _compute_map_score(team: str) -> dict[str, float]:
     return scores
 
 
+def _map_advantage(
+    actor: str,
+    map_name: str,
+    score_a: dict[str, float],
+    score_b: dict[str, float],
+) -> float:
+    """地图 map_name 对 actor 方的相对优势（越高 = 对 actor 越有利）"""
+    s_actor = score_a if actor == TEAM_A else score_b
+    s_opponent = score_b if actor == TEAM_A else score_a
+    return s_actor[map_name] - s_opponent[map_name]
+
+
+def _choose_map(
+    remaining: set[str],
+    actor: str,
+    score_a: dict[str, float],
+    score_b: dict[str, float],
+) -> str:
+    return max(
+        remaining,
+        key=lambda map_name: _map_advantage(actor, map_name, score_a, score_b),
+    )
+
+
+def _record_veto_step(
+    sequence: list[dict],
+    step: int,
+    team: str,
+    action: str,
+    map_name: str,
+) -> None:
+    sequence.append({
+        "step": step,
+        "team": team,
+        "action": action,
+        "map": map_name,
+    })
+
+
+def _take_veto_map(
+    remaining: set[str],
+    sequence: list[dict],
+    step: int,
+    team: str,
+    action: str,
+    advantage_actor: str,
+    score_a: dict[str, float],
+    score_b: dict[str, float],
+) -> str:
+    map_name = _choose_map(remaining, advantage_actor, score_a, score_b)
+    remaining.remove(map_name)
+    _record_veto_step(sequence, step, team, action, map_name)
+    return map_name
+
+
 def _simulate_veto(team1: str, team2: str) -> dict:
     """模拟 VCT 地图 BP 流程（贪心博弈），返回最可能的 veto 结果
 
@@ -469,48 +606,41 @@ def _simulate_veto(team1: str, team2: str) -> dict:
     score_a = _compute_map_score(team1)
     score_b = _compute_map_score(team2)
     remaining = set(VETO_MAPS)
-
-    def advantage(actor: str, m: str) -> float:
-        """地图 m 对 actor 方的相对优势（越高 = 对 actor 越有利）"""
-        s_actor = score_a if actor == "A" else score_b
-        s_opponent = score_b if actor == "A" else score_a
-        return s_actor[m] - s_opponent[m]
-
     sequence = []
 
     # Step 1: A ban — 移除对 A 最不利（对 B 最有利）的图
-    ban1 = max(remaining, key=lambda m: advantage("B", m))
-    remaining.remove(ban1)
-    sequence.append({"step": 1, "team": "A", "action": "ban", "map": ban1})
+    ban1 = _take_veto_map(
+        remaining, sequence, 1, TEAM_A, BAN_ACTION, TEAM_B, score_a, score_b
+    )
 
     # Step 2: B ban — 移除对 B 最不利（对 A 最有利）的图
-    ban2 = max(remaining, key=lambda m: advantage("A", m))
-    remaining.remove(ban2)
-    sequence.append({"step": 2, "team": "B", "action": "ban", "map": ban2})
+    ban2 = _take_veto_map(
+        remaining, sequence, 2, TEAM_B, BAN_ACTION, TEAM_A, score_a, score_b
+    )
 
     # Step 3: A pick — 选对 A 最有利的图
-    pick_a = max(remaining, key=lambda m: advantage("A", m))
-    remaining.remove(pick_a)
-    sequence.append({"step": 3, "team": "A", "action": "pick", "map": pick_a})
+    pick_a = _take_veto_map(
+        remaining, sequence, 3, TEAM_A, PICK_ACTION, TEAM_A, score_a, score_b
+    )
 
     # Step 4: B pick — 选对 B 最有利的图
-    pick_b = max(remaining, key=lambda m: advantage("B", m))
-    remaining.remove(pick_b)
-    sequence.append({"step": 4, "team": "B", "action": "pick", "map": pick_b})
+    pick_b = _take_veto_map(
+        remaining, sequence, 4, TEAM_B, PICK_ACTION, TEAM_B, score_a, score_b
+    )
 
     # Step 5: A ban
-    ban3 = max(remaining, key=lambda m: advantage("B", m))
-    remaining.remove(ban3)
-    sequence.append({"step": 5, "team": "A", "action": "ban", "map": ban3})
+    ban3 = _take_veto_map(
+        remaining, sequence, 5, TEAM_A, BAN_ACTION, TEAM_B, score_a, score_b
+    )
 
     # Step 6: B ban
-    ban4 = max(remaining, key=lambda m: advantage("A", m))
-    remaining.remove(ban4)
-    sequence.append({"step": 6, "team": "B", "action": "ban", "map": ban4})
+    ban4 = _take_veto_map(
+        remaining, sequence, 6, TEAM_B, BAN_ACTION, TEAM_A, score_a, score_b
+    )
 
     # 最后一张自动成为决胜图
     decider = remaining.pop()
-    sequence.append({"step": 7, "team": "—", "action": "decider", "map": decider})
+    _record_veto_step(sequence, 7, DECIDER_TEAM, DECIDER_ACTION, decider)
 
     return {
         "veto_sequence": sequence,
