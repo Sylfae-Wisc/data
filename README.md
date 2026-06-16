@@ -73,7 +73,7 @@
 此处以conda虚拟环境为例：
 
 ```bash
-conda create -n VCT python=3.10
+conda create -n VCT python=3.12
 conda activate VCT
 pip install -r requirements.txt
 ```
@@ -90,12 +90,6 @@ python src/run_pipeline.py
 
 ```bash
 streamlit run app/main.py
-```
-
-### 5. 运行测试
-
-```bash
-pytest tests/
 ```
 
 ---
@@ -260,22 +254,3 @@ data/raw/
 | players_stats | Tournament, Stage, Match Type, Player, Teams, Agents, Rounds Played, Rating, ACS, K:D, Survive %, ADR, KPR, APR, FKPR, FDPR, HS%, Clutch Success %, Clutches, Max Kills, Kills, Deaths, Assists, First Kills, First Deaths | 选手赛事级汇总（25 字段） |
 
 </details>
-
----
-
-## 开发策略
-
-先搭地基（数据→特征→模型→预测接口），再做 Match Predictor 作为**模板页面**，其余两人照着复制。
-
-```
-Phase 0           Phase 1           Phase 2            Phase 3
-Person A(地基) →  Person B(模板页) → Person C+A(复制) → 三人(收尾)
-```
-
-详请见 [docs/分工文档.md](docs/分工文档.md)。
-
----
-
-## 项目进度
-
-当前进展和待做事项见 [项目进度.md](项目进度.md)。

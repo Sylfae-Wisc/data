@@ -1,4 +1,4 @@
-"""Masters London — 2026 大师赛专题"""
+"""Masters London 2026 — 瑞士轮模型回测专题页"""
 
 import sys
 from pathlib import Path
@@ -7,260 +7,300 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
-from app.components import FEATURES_DIR, PROCESSED_DIR
+from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score, accuracy_score
+
 from app.components.sidebar import show_sidebar
 from app.components.theme import apply_global_styles, page_header
-from src.predictor import predict_match, predict_bo3_score
+from app.components.bracket import render_swiss_bracket, render_metrics_bar
+from src.predictor import predict_match
 
 st.set_page_config(page_title="Masters London", page_icon="🏅", layout="wide")
 
 apply_global_styles()
 show_sidebar()
 
-page_header("🏅 Masters London 2026", "VCT 2026 大师赛专题页 — 赛程回顾、数据分析、胜负复盘。")
+page_header(
+    "🏅 Masters London 2026",
+    "瑞士轮模型回测 — 预测 vs 实际结果对照 · 准确度评估 · 冷门检测",
+)
 
-# ==== 数据加载 ====
-MASTERS_NAME = "Valorant Masters Santiago 2026"  # 最新 Masters 数据
+# ============================================================
+# 数据加载
+# ============================================================
 
-@st.cache_resource
-def load_match_data():
-    return pd.read_parquet(FEATURES_DIR / "match_features.parquet")
+ROUND_DATA = Path("data/masters_london_2026/matches.csv")
 
-@st.cache_resource
-def load_player_stats():
-    return pd.read_csv("data/raw/vct_2026/players_stats/players_stats.csv")
-
-features = load_match_data()
-masters = features[features["Tournament"] == MASTERS_NAME].copy()
-
-if len(masters) == 0:
-    st.warning(f"暂无 {MASTERS_NAME} 数据。")
+if not ROUND_DATA.exists():
+    st.error(f"数据文件不存在：{ROUND_DATA}")
     st.stop()
 
-ps = load_player_stats()
-ps_masters = ps[ps["Tournament"] == MASTERS_NAME]
+raw = pd.read_csv(ROUND_DATA)
 
-# ==== 计算 ====
-teams_in_masters = sorted(
-    set(masters["Team A"]).union(set(masters["Team B"]))
-)
-stages = masters["Stage"].unique()
+# 逐场预测
+@st.cache_data(show_spinner="正在运行模型预测…")
+def run_predictions(_raw: pd.DataFrame) -> list[dict]:
+    results = []
+    for _, row in _raw.iterrows():
+        r = predict_match(str(row["team_a"]), str(row["team_b"]))
+        prob_a = float(r["team1_win_prob"])
+        pred_winner = row["team_a"] if prob_a > 0.5 else row["team_b"]
+        is_upset = (pred_winner != row["winner"]) and (max(prob_a, 1 - prob_a) > 0.6)
 
-# 按阶段分组
-stage_order = ["Swiss Stage", "Playoffs"]
-masters["stage_order"] = masters["Stage"].map(
-    {s: i for i, s in enumerate(stage_order)}
-).fillna(99)
-masters_sorted = masters.sort_values(["stage_order", "tord"])
+        results.append({
+            "round": int(row["round"]),
+            "group": str(row["group"]),
+            "team_a": str(row["team_a"]),
+            "team_b": str(row["team_b"]),
+            "score_a": int(row["score_a"]),
+            "score_b": int(row["score_b"]),
+            "winner": str(row["winner"]),
+            "prob_a": prob_a,
+            "predicted_winner": pred_winner,
+            "is_upset": is_upset,
+            "details": {
+                "mode": r.get("mode", "pre_match"),
+                "h2h_ratio": r.get("h2h_ratio", 0.5),
+                "h2h_matches": r.get("h2h_matches", 0),
+                "h2h_weight": r.get("h2h_weight", 0.0),
+                "h2h_effective_weight": r.get("h2h_effective_weight", 0.0),
+                "raw_prob": r.get("raw_prob", prob_a),
+            },
+        })
+    return results
 
-# 队伍战绩
-team_records = {}
-for team in teams_in_masters:
-    as_a = masters[masters["Team A"] == team]
-    as_b = masters[masters["Team B"] == team]
-    wins = (as_a["Team A Score"] > as_a["Team B Score"]).sum() + \
-           (as_b["Team B Score"] > as_b["Team A Score"]).sum()
-    losses = (as_a["Team A Score"] < as_a["Team B Score"]).sum() + \
-             (as_b["Team B Score"] < as_b["Team A Score"]).sum()
-    team_records[team] = {"W": wins, "L": losses}
 
-# 选手 MVP 排行
-if len(ps_masters) > 0:
-    ps_agg = ps_masters.groupby("Player").agg(
-        Rating=("Rating", "mean"),
-        ACS=("Average Combat Score", "mean"),
-        KAST=("Kill, Assist, Trade, Survive %", lambda x: x.str.rstrip("%").astype(float).mean() / 100),
-        ADR=("Average Damage Per Round", "mean"),
-        KPR=("Kills Per Round", "mean"),
-        HS=("Headshot %", lambda x: x.str.rstrip("%").astype(float).mean() / 100),
-        Teams=("Teams", "first"),
-        Matches=("Tournament", "count"),
-    ).reset_index()
-    ps_agg["Rating"] = ps_agg["Rating"].fillna(0)
-    ps_agg = ps_agg.sort_values("Rating", ascending=False)
+matches = run_predictions(raw)
 
-# 地图数据
-maps_played = pd.read_csv("data/raw/vct_2026/matches/maps_played.csv")
-maps_played = maps_played[maps_played["Tournament"] == MASTERS_NAME]
-map_counts = maps_played["Map"].value_counts()
+# ============================================================
+# 计算指标
+# ============================================================
 
-# Agent 数据
-agents = pd.read_csv("data/raw/vct_2026/agents/agents_pick_rates.csv")
-agents = agents[agents["Tournament"] == MASTERS_NAME]
+def compute_metrics(matches: list[dict]) -> dict:
+    y_true = np.array([1.0 if m["winner"] == m["team_a"] else 0.0 for m in matches], dtype=float)
+    y_prob = np.array([m["prob_a"] for m in matches], dtype=float)
 
-# ==== 渲染 ====
-c1, c2, c3 = st.columns(3)
-c1.metric("参赛战队", f"{len(teams_in_masters)}")
-c2.metric("比赛场次", f"{len(masters)}")
-c3.metric("比赛阶段", f"{', '.join(stages)}")
+    n = len(matches)
+    n_correct = sum(1 for m in matches if m["predicted_winner"] == m["winner"])
+    n_upsets = sum(1 for m in matches if m.get("is_upset"))
+
+    def _safe(fn, *args):
+        try:
+            return fn(*args)
+        except ValueError:
+            return float("nan")
+
+    return {
+        "n_matches": n,
+        "n_correct": n_correct,
+        "n_upsets": n_upsets,
+        "accuracy": n_correct / n if n else 0.0,
+        "brier": _safe(brier_score_loss, y_true, y_prob),
+        "log_loss": _safe(log_loss, y_true, y_prob),
+        "roc_auc": _safe(roc_auc_score, y_true, y_prob),
+    }
+
+
+metrics = compute_metrics(matches)
+
+# ============================================================
+# 渲染
+# ============================================================
+
+# --- 概览 KPI ---
+st.markdown(render_metrics_bar(metrics), unsafe_allow_html=True)
 
 st.divider()
 
-tab1, tab2, tab3, tab4 = st.tabs(["比赛列表", "战队战绩", "选手排行", "地图/英雄"])
+tabs = st.tabs(["📊 瑞士轮对阵图", "📈 准确度报告", "⚡ 冷门场次"])
 
-with tab1:
-    for _, match in masters_sorted.iterrows():
-        t1, t2 = match["Team A"], match["Team B"]
-        s1, s2 = match["Team A Score"], match["Team B Score"]
-        stage = match["Stage"]
-        match_name = match["Match Type"]
-
-        winner = t1 if s1 > s2 else t2 if s2 > s1 else "平局"
-        winner_color = "#38BDF8" if winner == t1 else "#FB7185"
-
-        with st.container():
-            cols = st.columns([1, 3, 1, 1])
-            cols[0].markdown(f"**{stage}**")
-            cols[1].markdown(
-                f"<span style='color:{winner_color}'>{match_name}</span>",
-                unsafe_allow_html=True,
-            )
-            score_str = f"{int(s1)} - {int(s2)}"
-            cols[2].markdown(f"**{score_str}**")
-            # 预测该场比赛的复盘
-            with cols[3]:
-                st.markdown(f"🏆 {winner}")
-
-        st.divider()
-
-with tab2:
-    # 战绩表
-    records_df = pd.DataFrame([
-        {"战队": t, "胜": r["W"], "负": r["L"],
-         "胜率": r["W"] / (r["W"] + r["L"]) if (r["W"] + r["L"]) > 0 else 0}
-        for t, r in team_records.items()
-    ]).sort_values("胜", ascending=False)
-
-    fig = go.Figure(go.Bar(
-        x=records_df["战队"],
-        y=records_df["胜"],
-        name="胜",
-        marker_color="#38BDF8",
-        text=records_df["胜"],
-        textposition="outside",
-    ))
-    fig.add_trace(go.Bar(
-        x=records_df["战队"],
-        y=records_df["负"],
-        name="负",
-        marker_color="#FF4655",
-        text=records_df["负"],
-        textposition="outside",
-    ))
-    fig.update_layout(
-        barmode="group",
-        height=350,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#AAB7CC",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+# ── Tab 1: Swiss bracket ───────────────────────────────────────────────
+with tabs[0]:
+    st.subheader("London 2026 · 瑞士轮对阵（R1 → R2 → R3）")
+    st.caption(
+        "每张比赛卡片可点开展开详情面板。"
+        "蓝色 = 冷门预测正确，红色 = 冷门预测错误。⚡ 标记为冷门场次。"
     )
-    st.plotly_chart(fig, width='stretch')
 
+    bracket_html = render_swiss_bracket(matches)
+    st.html(bracket_html)
+
+# ── Tab 2: Accuracy report ────────────────────────────────────────────
+with tabs[1]:
+    st.subheader("模型准确度报告")
+
+    # Per-match table
+    st.markdown("**逐场预测明细**")
+    rows = []
+    for m in matches:
+        pa = m["prob_a"]
+        pb = 1.0 - pa
+        correct = m["predicted_winner"] == m["winner"]
+        rows.append({
+            "轮次": f"R{m['round']} ({m['group']})",
+            "队伍 A": m["team_a"],
+            "队伍 B": m["team_b"],
+            "比分": f"{m['score_a']} – {m['score_b']}",
+            "胜者": m["winner"],
+            f"A 胜率": f"{pa:.1%}",
+            f"B 胜率": f"{pb:.1%}",
+            "预测正确": "✅" if correct else "❌",
+            "冷门": "⚡" if m.get("is_upset") else "",
+        })
+    report_df = pd.DataFrame(rows)
     st.dataframe(
-        records_df.style.format({"胜率": "{:.0%}"}),
-        width='stretch',
-        hide_index=True,
+        report_df,
+        use_container_width=True,
+        hide_index=True
     )
 
-with tab3:
-    if len(ps_agg) > 0:
-        top_n = st.slider("显示前 N 名", 5, 30, 10, key="mvp_n")
-        top_players = ps_agg.head(top_n)
+    st.divider()
 
-        fig = go.Figure(go.Bar(
-            x=top_players["Rating"],
-            y=top_players["Player"],
-            orientation="h",
-            marker_color="#FBBF24",
-            text=top_players["Rating"].round(2),
-            textposition="outside",
+    # Per-round metrics
+    st.markdown("**按轮次细分**")
+    round_metrics = []
+    for rnd in sorted(set(m["round"] for m in matches)):
+        rnd_matches = [m for m in matches if m["round"] == rnd]
+        rm = compute_metrics(rnd_matches)
+        round_metrics.append({
+            "轮次": f"R{rnd}",
+            "场次": rm["n_matches"],
+            "正确": f"{rm['n_correct']}/{rm['n_matches']}",
+            "准确率": f"{rm['accuracy']:.0%}",
+            "Brier": f"{rm['brier']:.4f}",
+            "冷门": rm["n_upsets"],
+        })
+    st.dataframe(
+        pd.DataFrame(round_metrics),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.divider()
+
+    # Calibration plot
+    st.markdown("**校准曲线（预测概率 vs 实际频率）**")
+    y_true = np.array([1.0 if m["winner"] == m["team_a"] else 0.0 for m in matches], dtype=float)
+    y_prob = np.array([m["prob_a"] for m in matches], dtype=float)
+
+    prob_true, prob_pred = [], []
+    try:
+        from sklearn.calibration import calibration_curve
+        prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=5)
+    except Exception:
+        # manual bins
+        bins = np.linspace(0, 1, 6)
+        for i in range(5):
+            mask = (y_prob >= bins[i]) & (y_prob < bins[i + 1])
+            if mask.sum() > 0:
+                prob_pred.append(y_prob[mask].mean())
+                prob_true.append(y_true[mask].mean())
+
+    if len(prob_true) > 0:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=prob_pred, y=prob_true,
+            mode="lines+markers",
+            name="模型校准",
+            line=dict(color="#38BDF8", width=2),
+            marker=dict(size=10, color="#38BDF8"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode="lines",
+            name="完美校准",
+            line=dict(color="#75839A", width=1, dash="dash"),
         ))
         fig.update_layout(
-            height=50 * min(top_n, 30) + 80,
-            xaxis=dict(range=[0, top_players["Rating"].max() * 1.2]),
-            yaxis=dict(autorange="reversed"),
+            height=350,
+            xaxis=dict(title="预测概率", range=[0, 1], tickformat=".0%"),
+            yaxis=dict(title="实际频率", range=[0, 1], tickformat=".0%"),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font_color="#AAB7CC",
-            margin=dict(l=10, r=60, t=10, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
-        st.plotly_chart(fig, width='stretch')
-
-        # 详细数据表
-        display = top_players.copy()
-        display["KAST"] = display["KAST"].apply(lambda x: f"{x:.1%}")
-        display["HS"] = display["HS"].apply(lambda x: f"{x:.1%}")
-        display["ACS"] = display["ACS"].round(0).astype(int)
-        display["ADR"] = display["ADR"].round(0).astype(int)
-        display["KPR"] = display["KPR"].round(2)
-        st.dataframe(
-            display[["Player", "Teams", "Rating", "ACS", "KAST", "ADR", "KPR", "HS"]],
-            width='stretch',
-            hide_index=True,
-            column_config={
-                "Player": "选手",
-                "Teams": "战队",
-                "Rating": st.column_config.NumberColumn("Rating", format="%.2f"),
-                "ACS": "ACS",
-                "KAST": "KAST",
-                "ADR": "ADR",
-                "KPR": "KPR",
-                "HS": "HS%",
-            },
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+        st.caption(
+            "点越靠近虚线 → 模型概率校准越好。10 场样本量较小，曲线仅供参考。"
         )
     else:
-        st.info("暂无选手数据。")
+        st.info("样本不足，无法绘制校准曲线。")
 
-with tab4:
-    mc1, mc2 = st.columns(2)
+# ── Tab 3: Upsets ──────────────────────────────────────────────────────
+with tabs[2]:
+    st.subheader("冷门场次")
 
-    with mc1:
-        st.markdown("**地图出场次数**")
-        if len(map_counts) > 0:
-            fig = go.Figure(go.Bar(
-                x=map_counts.values,
-                y=map_counts.index,
-                orientation="h",
-                marker_color="#86EFAC",
-                text=map_counts.values,
-                textposition="outside",
-            ))
-            fig.update_layout(
-                height=300,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#AAB7CC",
-                margin=dict(l=10, r=40, t=10, b=10),
+    upsets = [m for m in matches if m.get("is_upset")]
+    close = [m for m in matches if m["predicted_winner"] != m["winner"] and not m.get("is_upset")]
+
+    if not upsets and not close:
+        st.success("🎉 模型在所有场次中预测方向正确！")
+    else:
+        if upsets:
+            st.markdown(
+                f'<div style="font-size:0.82rem;color:#aab7cc;margin-bottom:10px;">'
+                f'以下 {len(upsets)} 场比赛模型给出较高信心（&gt;60%）但预测方向错误：</div>',
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig, width='stretch')
-        else:
-            st.info("无地图数据。")
+            for m in upsets:
+                pa = m["prob_a"]
+                pb = 1.0 - pa
+                model_confidence = max(pa, pb)
+                d = m["details"]
+                h2h_w = d.get("h2h_weight", 0.0)
+                h2h_eff = d.get("h2h_effective_weight", 0.0)
+                h2h_n = d.get("h2h_matches", 0)
+                raw_p = d.get("raw_prob", pa)
+                if h2h_w > 0.005:
+                    h2h_status = f"H2H 校准已启用（累积权重 {h2h_eff:.2f}，校准权重 {h2h_w:.0%}）"
+                    h2h_color = "#86efac"
+                elif h2h_n > 0:
+                    h2h_status = f"H2H 数据不足（{h2h_n} 场，累积权重 {h2h_eff:.2f} &lt; 2.0），未启用校准"
+                    h2h_color = "#fbbf24"
+                else:
+                    h2h_status = "无历史交手记录，H2H 校准不适用"
+                    h2h_color = "#75839a"
+                calib_note = ""
+                if abs(pa - raw_p) > 0.005:
+                    arrow = "↑" if pa > raw_p else "↓"
+                    calib_note = f" · H2H 校准 {arrow}{abs(pa - raw_p):.1%}（原始 {raw_p:.1%} → {pa:.1%}）"
+                st.markdown(f"""
+<div style="background:rgba(15,23,42,0.92);border:2px solid rgba(255,70,85,0.50);border-radius:8px;padding:16px 20px;margin:12px 0;">
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+<div>
+    <span style="font-weight:850;font-size:0.85rem;">R{m['round']} ({m['group']})</span>
+    <span style="color:#aab7cc;margin-left:8px;">{m['team_a']} vs {m['team_b']}</span>
+</div>
+<div style="font-weight:850;font-size:1.1rem;">{m['score_a']} : {m['score_b']}</div>
+<div>
+    <span style="background:rgba(255,70,85,0.18);color:#FF4655;padding:3px 10px;border-radius:4px;font-weight:850;font-size:0.75rem;">
+    模型信心 {model_confidence:.0%} → {m['predicted_winner']}
+    </span>
+    <span style="margin-left:6px;color:#86efac;font-weight:750;">实际 {m['winner']}</span>
+</div>
+</div>
+<div style="margin-top:10px;font-size:0.78rem;color:#aab7cc;">
+模型预测概率：{m['team_a']} {pa:.1%} — {m['team_b']} {pb:.1%}{calib_note}
+</div>
+<div style="margin-top:4px;font-size:0.72rem;color:{h2h_color};">{h2h_status}</div>
+</div>""", unsafe_allow_html=True)
 
-    with mc2:
-        st.markdown("**英雄选取率 Top 10**")
-        if len(agents) > 0:
-            agent_agg = agents.groupby("Agent")["Pick Rate"].apply(
-                lambda x: x.str.rstrip("%").astype(float).mean()
-            ).sort_values(ascending=False).head(10)
-            fig = go.Figure(go.Bar(
-                x=agent_agg.values,
-                y=agent_agg.index,
-                orientation="h",
-                marker_color="#C084FC",
-                text=[f"{v:.0f}%" for v in agent_agg.values],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                height=300,
-                xaxis=dict(range=[0, 100]),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#AAB7CC",
-                margin=dict(l=10, r=40, t=10, b=10),
+        if close:
+            st.markdown(
+                f'<div style="font-size:0.82rem;color:#aab7cc;margin:20px 0 10px;">'
+                f'另有 {len(close)} 场预测接近但方向错误（信心 ≤60%，不算冷门）：</div>',
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig, width='stretch')
-        else:
-            st.info("无英雄数据。")
+            for m in close:
+                st.markdown(f"""
+<div style="background:rgba(15,23,42,0.92);border:1px solid rgba(251,191,36,0.25);border-radius:8px;padding:12px 20px;margin:8px 0;">
+<span style="color:#fbbf24;">⚠</span>
+R{m['round']} ({m['group']}): {m['team_a']} vs {m['team_b']}
+→ {m['score_a']} : {m['score_b']}（胜者 {m['winner']}）
+<span style="color:#75839a;">· 模型概率：{m['prob_a']:.1%} / {1 - m['prob_a']:.1%}</span>
+</div>""", unsafe_allow_html=True)

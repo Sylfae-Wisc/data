@@ -380,6 +380,7 @@ def predict_match(
     p_forward = _raw_match_prob(team1, team2, stats_a, stats_b)
     p_reverse = _raw_match_prob(team2, team1, stats_b, stats_a)
     prob = (p_forward + (1 - p_reverse)) / 2
+    raw_prob = prob
     mode = "in_match" if stats_a is not None and stats_b is not None else "pre_match"
     prob, h2h = _blend_with_decayed_h2h(prob, team1, team2, mode)
 
@@ -393,6 +394,8 @@ def predict_match(
         "h2h_ratio": round(h2h["ratio"], 4),
         "h2h_matches": h2h["matches"],
         "h2h_weight": round(h2h["blend_weight"], 4),
+        "h2h_effective_weight": round(h2h["effective_weight"], 4),
+        "raw_prob": round(raw_prob, 4),
     }
 
 
